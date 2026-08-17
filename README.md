@@ -37,6 +37,8 @@ DeepSeek Harness Web 的移动端外壳插件。窄屏（< 1024px）下隐藏左
 - **一键安装即热加载**：安装按钮触发 `dsh plugin add`，安装完成后自动热加载（无需重启），并通过 toast 提示结果
 - **EN→ZH 翻译**：README 支持中英语言切换，英文 README 自动翻译为中文（MyMemory 分块翻译 + LLM 兜底）
 
+> ⚠️ 市场内一键安装**不保证稳定成功**（受网络 / 构建环境影响）。推荐复制仓库链接，直接用 `dsh` 命令安装（见下方[安装](#安装)）。
+
 ### 会话状态面板
 
 - **Status 标签页**：在会话头部新增 Status 标签（与 Chat / Trajectory 并列），展示轮数 / 步数 / 耗时 / TTFT / 缓存命中 / token 用量
@@ -44,9 +46,9 @@ DeepSeek Harness Web 的移动端外壳插件。窄屏（< 1024px）下隐藏左
 
 ### 自定义推理参数
 
-- **Reasoning Effort 配置**：为自定义 provider 的模型添加 reasoning effort 选项（low / medium / high / off）
-- **thinkingFormat 适配**：支持 deepseek 与 openai 两种 thinking 输出格式
+- **Reasoning Effort 配置**：为自定义 provider 的模型添加 reasoning effort 选项（off / low / high / xhigh / max）
 - **reasoningEfforts 自动回填**：模型未声明 `reasoningEfforts` 时自动补全默认值
+- **协议切换安全**：`thinkingFormat` / `supportsReasoningEffort` 等 completions 专属开关不再自动写入模型配置，provider 在 openai-completions / openai-responses 之间任意切换都不会触发保存校验报错
 
 ### 其他增强
 
