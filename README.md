@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 的移动端外壳插件。窄屏（< 1024px）下隐藏左侧 rail、目录变为侧滑抽屉、会话区独占全宽，并附带插件市场、会话状态面板、设置适配、自定义推理参数等移动端增强。纯 client 插件，宽屏下与未安装时完全一致。
 
-[![Release v0.1.0](https://img.shields.io/badge/release-v0.1.0-5B4CF0?style=flat-square)](package.json)
+[![Release v0.1.0](https://img.shields.io/badge/release-v0.1.1-5B4CF0?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0B7285?style=flat-square)](LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-Web%20Profile-5B4CF0?style=flat-square)](cordis.patch.yml)
 
