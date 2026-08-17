@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "sourceMap": true,
+    "declarationMap": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmitOnError": true,
+    "rootDir": "src",
+    "outDir": "lib",
+    "declarationDir": "lib/types"
+  },
+  "include": [
+    "src/index.ts",
+    "src/node-env.d.ts"
+  ],
+  "exclude": [
+    "src/client",
+    "lib",
+    "node_modules"
+  ]
+}
