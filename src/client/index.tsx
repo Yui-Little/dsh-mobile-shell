@@ -3,6 +3,7 @@ import { MobileNavToggle } from './MobileNavToggle.tsx'
 import { MobileNavOverlay } from './MobileNavOverlay.tsx'
 import { MobileStatusView } from './MobileStatusView.tsx'
 import { MarketplaceView } from './MarketplaceView.tsx'
+import { GithubKeyView } from './GithubKeyView.tsx'
 import { ComposerAttachButton, FileRailDock, SendOverlay, initComposerAttach, toast } from './ComposerAttach.tsx'
 import { clearAttachments, pendingAttachmentsOf } from './attachmentStore.ts'
 import type { PendingAttachment } from './attachmentStore.ts'
@@ -766,6 +767,58 @@ export function apply(ctx: ClientContext): void {
       document.removeEventListener('pointerdown', onPointerDown, true)
     }
   }, 'dsh-mobile-shell: no-keyboard command/attach taps')
+
+  // After send, the official InputBar focuses the textarea from a React
+  // effect (`el.focus({ preventScroll: true })` when `locked` flips back).
+  // On Android WebView that is not a user gesture: the IME stays closed and
+  // the caret often never paints, yet the element is already activeElement
+  // so a later tap is a no-op. Drop programmatic focus, and if the user
+  // taps an already-focused composer while the keyboard is down, blur first
+  // so the same tap re-focuses as a real gesture and the IME comes up.
+  ctx.effect(() => {
+    const narrow = window.matchMedia('(max-width: 1023px)')
+    if (!narrow.matches) return () => {}
+    const isComposerTextarea = (node: EventTarget | null): node is HTMLTextAreaElement =>
+      node instanceof HTMLTextAreaElement && node.closest('[data-mobile-nav-composer]') !== null
+    const keyboardOpen = (): boolean => {
+      const viewport = window.visualViewport
+      if (viewport === null) return false
+      return window.innerHeight - viewport.height > 120
+    }
+    let userTappedComposer = false
+    let tapTimer = 0
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      const textarea =
+        target instanceof HTMLTextAreaElement
+          ? target
+          : target instanceof Element
+            ? target.closest('textarea')
+            : null
+      if (textarea === null || !isComposerTextarea(textarea)) return
+      userTappedComposer = true
+      if (tapTimer !== 0) window.clearTimeout(tapTimer)
+      tapTimer = window.setTimeout(() => {
+        tapTimer = 0
+        userTappedComposer = false
+      }, 800)
+      // Already focused from a programmatic send-focus, keyboard closed:
+      // blur so this same tap re-focuses as a user gesture and the IME opens.
+      if (document.activeElement === textarea && !keyboardOpen()) textarea.blur()
+    }
+    const onFocusIn = (event: FocusEvent): void => {
+      if (!isComposerTextarea(event.target)) return
+      if (userTappedComposer) return
+      event.target.blur()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('focusin', onFocusIn, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('focusin', onFocusIn, true)
+      if (tapTimer !== 0) window.clearTimeout(tapTimer)
+    }
+  }, 'dsh-mobile-shell: restore IME after send')
   // Chat font size rail: two stepper buttons (A- / A+) plus a px readout
   // at the FAR RIGHT of the conversation tab bar. The value persists in
   // localStorage and is applied as --mobile-nav-font-scale on the chat
@@ -1364,6 +1417,13 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     label: () => t('market.title'),
   }, MarketplaceView))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'mobile-github',
+    order: 61,
+    locale: NS,
+    label: () => t('github.title'),
+  }, GithubKeyView))
 
   // Composer attachment chrome: the "+" picker button sits in the tool row
   // (conversation.input.left — a React-native seat that survives composer

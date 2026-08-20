@@ -25,6 +25,9 @@ interface MarketCatalog {
   categories: Record<string, { en?: string; zh?: string }>
   plugins: MarketPlugin[]
   installed?: string[]
+  /** Raw dependency specs (e.g. `github:owner/repo`) — repo-based matching for
+   * installed detection, since catalog names rarely equal npm package names. */
+  installedSpecs?: string[]
 }
 
 const CATALOG_URL = '/api/mobile-nav/marketplace'
@@ -647,9 +650,11 @@ export function MarketplaceView() {
 
       const installBtn = el('button', 'mkt-btn mkt-install', '安装')
       installBtn.type = 'button'
-      // Check if already installed (npm name or bundle name in profile)
+      // Check if already installed (npm name, bundle name, or github: repo spec)
       const npmName = (plugin.install ?? '').replace(/^dsh\s+plugin(?:\s+--profile\s+\S+)?\s+add\s+/, '').trim()
+      const repoKey = repoKeyOf(plugin)
       const isInstalled = (catalog?.installed ?? []).some((name) => name === npmName || name === plugin.name || name === shortName(plugin))
+        || (catalog?.installedSpecs ?? []).some((spec) => spec.toLowerCase().includes(`github:${repoKey.toLowerCase()}`))
       if (isInstalled) {
         installBtn.textContent = ''
         installBtn.append(iconEl('check', 'mkt-ic'), document.createTextNode(' 已安装'))

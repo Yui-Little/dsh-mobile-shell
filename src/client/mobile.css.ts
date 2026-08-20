@@ -288,6 +288,13 @@ a:active,
      row's last child. */
   [data-phase] [class*="_card"][data-mobile-nav-composer] > :last-child {
     gap: 8px !important;
+    /* The official row is flex-wrap: wrap, and wrap outranks shrink: when the
+       tools group ([/] [+] modes pill) plus the trailing group (model pill +
+       send) exceed the line width, the WHOLE trailing group drops to a second
+       line — the model selector + send end up below the permission pill.
+       Both groups have min-width: 0 and their labels already ellipsize, so
+       forcing a single line lets them share the squeeze instead. */
+    flex-wrap: nowrap !important;
   }
   [data-phase] [class*="_card"][data-mobile-nav-composer] > :last-child > :first-child {
     gap: 8px !important;
@@ -496,7 +503,16 @@ a:active,
   [data-mobile-nav="attach-only"] {
     display: none !important;
   }
-    margin: 8px 0 0 !important;
+
+  /* Android WebView: html/body touch-action:manipulation can swallow caret
+     placement and IME on the composer. Restore default touch on the
+     textarea so a tap always opens the keyboard and shows a caret. */
+  [data-phase] [class*="_card"][data-mobile-nav-composer] textarea {
+    touch-action: auto !important;
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    pointer-events: auto !important;
+    caret-color: auto;
   }
 
   /* --- Command menu (the "/" launcher) as a mobile sheet ---
@@ -2631,5 +2647,51 @@ html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"] {
 .mkt-readme .mkt-task{list-style:none;margin-left:-22px}
 .mkt-readme .mkt-task input[type=checkbox]{margin-right:8px;accent-color:var(--dsw-alias-state-business-primary,#4f6ef7);vertical-align:-1px}
 .mkt-readme .mkt-task-done{color:var(--dsw-alias-label-tertiary,inherit)}
+
+/* ---- GitHub Token settings page ---- */
+.ghk-page{padding:16px 16px 28px;max-width:560px}
+.ghk-card{
+  padding:16px 16px 14px;
+  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));
+  border-radius:14px;
+  background:var(--dsw-alias-bg-module,#fff);
+}
+.ghk-title{font-size:16px;font-weight:600;color:var(--dsw-alias-label-primary,inherit)}
+.ghk-desc{margin:6px 0 12px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,inherit)}
+.ghk-status{font-size:12px;font-weight:500;margin-bottom:10px;color:var(--dsw-alias-label-secondary,inherit)}
+.ghk-status[data-state="on"]{color:var(--dsw-alias-state-success,#2f9e44)}
+.ghk-status[data-state="off"]{color:var(--dsw-alias-label-tertiary,inherit)}
+.ghk-input{
+  width:100%;
+  box-sizing:border-box;
+  min-height:40px;
+  padding:8px 12px;
+  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));
+  border-radius:10px;
+  background:var(--dsw-alias-bg-module-platform,transparent);
+  color:inherit;
+  font-size:14px;
+}
+.ghk-actions{display:flex;gap:8px;margin-top:12px}
+.ghk-save,.ghk-clear{
+  min-height:36px;
+  padding:0 14px;
+  border-radius:10px;
+  font-size:13px;
+  font-weight:500;
+  cursor:pointer;
+}
+.ghk-save{
+  border:none;
+  background:var(--dsw-alias-state-business-primary,#4f6ef7);
+  color:#fff;
+}
+.ghk-clear{
+  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));
+  background:transparent;
+  color:inherit;
+}
+.ghk-hint{min-height:18px;margin-top:10px;font-size:12px;color:var(--dsw-alias-label-tertiary,inherit)}
+.ghk-hint[data-err="1"]{color:var(--dsw-alias-state-danger,#d9480f)}
 
 `

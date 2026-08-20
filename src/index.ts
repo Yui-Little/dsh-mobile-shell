@@ -12,12 +12,12 @@
  * before its log can be removed.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { appendFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 
 /** Session ids minted by the harness have this exact shape. */
@@ -27,6 +27,8 @@ const ROUTE_PATH = '/api/mobile-nav/delete-session'
 const STORE_IMAGE_PATH = '/api/mobile-nav/store-image'
 const IMAGE_GET_PATH = '/api/mobile-nav/image'
 const REASONING_GET_PATH = '/api/mobile-nav/reasoning'
+const GITHUB_TOKEN_PATH = '/api/mobile-nav/github-token'
+const GITHUB_TOKEN_REF = 'GITHUB_TOKEN'
 const MAX_BODY_BYTES = 1_000_000
 
 /** The pi-ai settings namespace that owns hand-declared custom providers. */
@@ -395,21 +397,28 @@ async function backfillReasoningDefaults(scoped: DeleteCtx, attempt = 0): Promis
 }
 
 /* ---------- plugin marketplace ----------
- * Catalog source: the community registry (awesome-dsh-plugin.com/plugins.json)
- * carries every plugin with bilingual curated descriptions, stars, added
- * dates, categories and the official install command — one fetch gives the
- * whole market, no per-repo GitHub API calls. Install runs the official
- * `dsh plugin --profile web add <target>` (persists across restarts);
- * translation uses the default model through the llm service; the README
- * route feeds the repo "window" in the UI.
+ * Catalog source: the DSH-Plugin Hub (dsh-plugin.org) — the same curated
+ * directory the community "Plugin Hub" plugin uses: ~2,500 human-verified
+ * plugins with category, topics, stars, added/updated dates and the source
+ * repo, refreshed daily. The zh and en API files are fetched and merged so
+ * every card can carry a bilingual description. The old community registry
+ * (awesome-dsh-plugin.com/plugins.json) stays as a fallback when the hub is
+ * unreachable. Install runs the official `dsh plugin --profile web add
+ * <target>` (persists across restarts); translation uses the default model
+ * through the llm service; the README route feeds the repo "window" in the UI.
  */
 
+const HUB_CATALOG_URLS = {
+  zh: 'https://dsh-plugin.org/api/plugins.zh.json',
+  en: 'https://dsh-plugin.org/api/plugins.en.json',
+} as const
 const MARKET_CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json'
 const MARKET_TTL_MS = 6 * 3600_000
 const MARKET_INSTALL_TIMEOUT_MS = 180_000
 
 interface MarketCatalog {
   updated?: unknown
+  count?: unknown
   categories?: unknown
   plugins?: unknown
 }
@@ -421,40 +430,158 @@ interface MarketPluginEntry {
   description?: unknown
   stars?: unknown
   added?: unknown
+  updatedAt?: unknown
   install?: unknown
+}
+
+/** The 11 hub categories with bilingual labels — emitted as the catalog's
+ * category map so the client's category chip list renders without changes. */
+const HUB_CATEGORIES: Record<string, { en: string; zh: string }> = {
+  interface: { zh: '界面与体验', en: 'UI & Experience' },
+  session: { zh: '会话与消息', en: 'Sessions & Messages' },
+  memory: { zh: '记忆与上下文', en: 'Memory & Context' },
+  tools: { zh: '工具与能力', en: 'Tools & Capabilities' },
+  agent: { zh: '技能与智能体', en: 'Skills & Agents' },
+  workflow: { zh: '工作流与自动化', en: 'Workflow & Automation' },
+  integration: { zh: '集成与连接', en: 'Integrations & Connections' },
+  model: { zh: '模型与推理', en: 'Models & Reasoning' },
+  dev: { zh: '开发与运维', en: 'Development & Operations' },
+  knowledge: { zh: '数据与知识', en: 'Data & Knowledge' },
+  fun: { zh: '娱乐', en: 'Entertainment' },
+}
+
+/** A raw entry from the hub's online API (short keys, see the hub client:
+ * s=slug, o=ownerSlug, n=displayName, c=category, t=topics, d=description,
+ * r=repo "owner/repo", v=verified, u=repoUpdatedAt, a=addedAt, sg=stars,
+ * fk=forks). */
+interface HubEntry {
+  s?: unknown
+  o?: unknown
+  n?: unknown
+  c?: unknown
+  d?: unknown
+  r?: unknown
+  u?: unknown
+  a?: unknown
+  sg?: unknown
+}
+
+/** Stable identity of a hub entry across the zh/en files. */
+function hubKey(entry: HubEntry): string {
+  const o = typeof entry.o === 'string' ? entry.o : ''
+  const s = typeof entry.s === 'string' ? entry.s : ''
+  return o !== '' && s !== '' ? `${o}/${s}` : s
+}
+
+/** Normalize the hub's repo string ("owner/repo", possibly a full GitHub URL)
+ * to the bare "owner/repo" the rest of the market speaks. */
+function hubRepo(entry: HubEntry): string {
+  const raw = typeof entry.r === 'string' ? entry.r.trim() : ''
+  if (raw === '') return ''
+  const cleaned = raw.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '')
+  const parts = cleaned.split('/').filter(Boolean)
+  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : cleaned
 }
 
 let marketCache: { at: number; data: MarketCatalog } | null = null
 
-/** Load the catalog, preferring the cache and falling back to a stale copy. */
+async function fetchJson(url: string): Promise<unknown> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`catalog HTTP ${res.status}`)
+  return res.json() as Promise<unknown>
+}
+
+/** Load the hub catalog: both language files fetched in parallel and merged
+ * by entry key, so each plugin carries a {zh, en} description pair. Returns
+ * null when the hub is completely unreachable. */
+async function hubCatalog(): Promise<MarketCatalog | null> {
+  const [zhRes, enRes] = await Promise.allSettled([
+    fetchJson(HUB_CATALOG_URLS.zh),
+    fetchJson(HUB_CATALOG_URLS.en),
+  ])
+  const zhList = zhRes.status === 'fulfilled' && Array.isArray(zhRes.value) ? (zhRes.value as HubEntry[]) : []
+  const enList = enRes.status === 'fulfilled' && Array.isArray(enRes.value) ? (enRes.value as HubEntry[]) : []
+  if (zhList.length === 0 && enList.length === 0) return null
+  const enByKey = new Map<string, HubEntry>()
+  for (const entry of enList) {
+    const key = hubKey(entry)
+    if (key !== '') enByKey.set(key, entry)
+  }
+  const seen = new Set<string>()
+  const plugins: MarketPluginEntry[] = []
+  for (const entry of [...zhList, ...enList]) {
+    const key = hubKey(entry)
+    if (key === '' || seen.has(key)) continue
+    seen.add(key)
+    const en = enByKey.get(key)
+    const repo = hubRepo(entry)
+    const category = typeof entry.c === 'string' && entry.c in HUB_CATEGORIES ? entry.c : 'tools'
+    plugins.push({
+      name: typeof entry.n === 'string' && entry.n !== '' ? entry.n : (typeof entry.s === 'string' ? entry.s : repo),
+      owner: typeof entry.o === 'string' && entry.o !== '' ? entry.o : repo.split('/')[0] ?? '',
+      url: repo !== '' ? `https://github.com/${repo}` : '',
+      category,
+      description: {
+        zh: typeof entry.d === 'string' ? entry.d : undefined,
+        en: typeof en?.d === 'string' ? en.d : undefined,
+      },
+      stars: typeof entry.sg === 'number' ? entry.sg : 0,
+      added: typeof entry.a === 'string' ? entry.a : '',
+      updatedAt: typeof entry.u === 'string' ? entry.u : undefined,
+      install: repo !== '' ? `dsh plugin --profile web add github:${repo}` : '',
+    })
+  }
+  return {
+    updated: new Date().toISOString().slice(0, 10),
+    count: plugins.length,
+    categories: HUB_CATEGORIES,
+    plugins,
+  }
+}
+
+/** Load the catalog, preferring the cache and falling back to a stale copy.
+ * Primary source is the hub; the legacy registry is the fallback. */
 async function marketCatalog(): Promise<{ ok: boolean; data?: MarketCatalog; error?: string }> {
   if (marketCache !== null && Date.now() - marketCache.at < MARKET_TTL_MS) {
     return { ok: true, data: marketCache.data }
   }
+  let data: MarketCatalog | null = null
+  let error = ''
   try {
-    const res = await fetch(MARKET_CATALOG_URL)
-    if (!res.ok) throw new Error(`catalog HTTP ${res.status}`)
-    const data = (await res.json()) as MarketCatalog
+    data = await hubCatalog()
+  } catch (caught) {
+    error = caught instanceof Error ? caught.message : String(caught)
+  }
+  if (data === null) {
+    try {
+      const res = await fetch(MARKET_CATALOG_URL)
+      if (!res.ok) throw new Error(`catalog HTTP ${res.status}`)
+      data = (await res.json()) as MarketCatalog
+    } catch (caught) {
+      if (error === '') error = caught instanceof Error ? caught.message : String(caught)
+    }
+  }
+  if (data !== null) {
     marketCache = { at: Date.now(), data }
     return { ok: true, data }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (marketCache !== null) return { ok: true, data: marketCache.data }
-    return { ok: false, error: message }
   }
+  if (marketCache !== null) return { ok: true, data: marketCache.data }
+  return { ok: false, error: error !== '' ? error : 'catalog unavailable' }
 }
 
 /** Project the catalog into the payload the client renders (trimmed fields).
- * Includes the set of currently-installed profile bundle names so the client
- * can mark already-installed plugins without a separate round-trip. */
+ * Includes the set of currently-installed profile bundle names (plus the raw
+ * dependency specs) so the client can mark already-installed plugins without
+ * a separate round-trip. */
 function marketPayload(scoped: DeleteCtx, catalog: MarketCatalog): Record<string, unknown> {
   const plugins = Array.isArray(catalog.plugins) ? catalog.plugins : []
-  const installed = readInstalledBundleNames(scoped)
+  const { installed, installedSpecs } = readInstalledState(scoped)
   return {
     updated: catalog.updated ?? null,
     count: plugins.length,
     categories: catalog.categories ?? {},
     installed,
+    installedSpecs,
     plugins: plugins.map((entry) => {
       const e = entry as MarketPluginEntry
       return {
@@ -465,10 +592,22 @@ function marketPayload(scoped: DeleteCtx, catalog: MarketCatalog): Record<string
         description: e.description ?? {},
         stars: typeof e.stars === 'number' ? e.stars : 0,
         added: typeof e.added === 'string' ? e.added : '',
+        updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : undefined,
         install: typeof e.install === 'string' ? e.install : '',
       }
     }),
   }
+}
+
+/** Read the web profile's installed state: the bundle/dependency NAMES (for
+ * name-based matching) plus the raw dependency SPECS (for repo-based matching
+ * like `github:owner/repo` — the form pnpm stores for GitHub installs). */
+function readInstalledState(scoped: DeleteCtx): { installed: string[]; installedSpecs: string[] } {
+  const pkg = readProfilePackageJson()
+  if (pkg === null) return { installed: [], installedSpecs: [] }
+  const installed = [...new Set([...pkg.bundles, ...Object.keys(pkg.dependencies)])]
+  const installedSpecs = Object.values(pkg.dependencies).filter((spec): spec is string => typeof spec === 'string' && spec !== '')
+  return { installed, installedSpecs }
 }
 
 /** Parse the web profile's package.json (dependencies + bundle list). Returns
@@ -836,19 +975,31 @@ async function handleMarketplaceReadmeFile(scoped: DeleteCtx, req: ReqLike, res:
 }
 
 /* ---------- marketplace "last updated" times (GitHub pushed_at, lazily)
- * The community catalog only carries the date each plugin was added, so the
- * card's "updated" column would always be a bare date. To show a real
- * timestamp (down to HH:mm) we resolve the GitHub repo's `pushed_at` lazily
- * for the repos the UI actually renders. Results are cached in memory and on
- * disk (12h TTL); the unauthenticated GitHub API quota (60 req/h) is guarded
- * with a cooldown and a tight concurrency limit, so heavy browsing degrades
- * gracefully back to the catalog date instead of hammering the API.
+ * The hub catalog already carries the real repo updated time per plugin, so
+ * the lazy GitHub resolution below is only a fallback for repos the catalog
+ * has no date for. For those it resolves the GitHub repo's `pushed_at`
+ * lazily for the repos the UI actually renders. Results are cached in memory
+ * and on disk (12h TTL); the unauthenticated GitHub API quota (60 req/h) is
+ * guarded with a cooldown and a tight concurrency limit, so heavy browsing
+ * degrades gracefully back to the catalog date instead of hammering the API.
  */
 const MARKET_UPDATED_TTL_MS = 12 * 3600_000
 const MARKET_UPDATED_MAX_BATCH = 40
 const MARKET_UPDATED_CONCURRENCY = 4
 const MARKET_UPDATED_TIMEOUT_MS = 6000
 const MARKET_UPDATED_CACHE_FILE = join(homedir(), '.dsh', 'marketplace-updated.json')
+
+/** "owner/repo" from a https://github.com/… URL (the form the market's plugin
+ * entries carry). Returns '' for anything unparseable. */
+function githubRepoOfUrl(url: string): string {
+  try {
+    const parts = new URL(url).pathname.split('/').filter(Boolean)
+    if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
+  } catch {
+    // not a URL — fall through
+  }
+  return ''
+}
 
 interface UpdatedEntry {
   iso: string
@@ -1013,8 +1164,27 @@ async function handleMarketplaceUpdated(scoped: DeleteCtx, req: ReqLike, res: Re
   await loadUpdatedCache()
   const result: Record<string, string> = {}
   const missing: Array<[string, string]> = []
+  // The hub catalog already carries the real GitHub pushed_at per repo — serve
+  // those straight from the catalog so the unauthenticated GitHub API quota is
+  // never spent on hub entries (the lazy resolution below only runs for repos
+  // the catalog has no date for, e.g. legacy-registry fallback entries).
+  const catalogResult = await marketCatalog()
+  const catalogUpdated = new Map<string, string>()
+  if (catalogResult.ok && catalogResult.data !== undefined) {
+    for (const raw of (catalogResult.data.plugins ?? []) as MarketPluginEntry[]) {
+      const updated = typeof raw.updatedAt === 'string' ? raw.updatedAt : ''
+      const url = typeof raw.url === 'string' ? raw.url : ''
+      const repo = githubRepoOfUrl(url)
+      if (updated !== '' && repo !== '') catalogUpdated.set(repo, updated)
+    }
+  }
   const now = Date.now()
   for (const key of keys) {
+    const fromCatalog = catalogUpdated.get(key)
+    if (fromCatalog !== undefined) {
+      result[key] = fromCatalog
+      continue
+    }
     const entry = updatedCache?.[key]
     if (entry !== undefined && entry.iso !== '' && now - entry.at < MARKET_UPDATED_TTL_MS) {
       result[key] = entry.iso
@@ -1345,6 +1515,109 @@ function sendJson(res: ResLike, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload))
 }
 
+/** Local credentials document used by dsh-credentials-local. */
+function credentialsPath(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), '.credentials.yaml')
+}
+
+function quoteYamlScalar(value: string): string {
+  if (value === '' || /[\s:#&*!|>'"@`\\]/.test(value) || value !== value.trim()) return JSON.stringify(value)
+  return value
+}
+
+function parseCredentialsKeys(text: string): { lines: string[]; keys: Map<string, number> } {
+  const lines = text.split('\n')
+  const keys = new Map<string, number>()
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(lines[i] ?? '')
+    if (match !== null && match[1] !== undefined) keys.set(match[1], i)
+  }
+  return { lines, keys }
+}
+
+function isGithubPat(value: string): boolean {
+  return /^(ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{16,}$/.test(value)
+}
+
+async function readGithubTokenStatus(): Promise<{ configured: boolean; source?: string }> {
+  try {
+    const text = new TextDecoder().decode(await readFile(credentialsPath()))
+    const { lines, keys } = parseCredentialsKeys(text)
+    const idx = keys.get(GITHUB_TOKEN_REF)
+    if (idx === undefined) return { configured: false }
+    const line = lines[idx] ?? ''
+    const raw = line.slice(line.indexOf(':') + 1).trim().replace(/^['"]|['"]$/g, '')
+    if (raw === '') return { configured: false }
+    return { configured: true, source: 'file' }
+  } catch {
+    return { configured: false }
+  }
+}
+
+async function writeGithubToken(token: string | null): Promise<{ configured: boolean; source?: string }> {
+  const path = credentialsPath()
+  let text = ''
+  try {
+    text = new TextDecoder().decode(await readFile(path))
+  } catch {
+    text = ''
+  }
+  const { lines, keys } = parseCredentialsKeys(text)
+  const idx = keys.get(GITHUB_TOKEN_REF)
+  if (token === null || token === '') {
+    if (idx !== undefined) lines.splice(idx, 1)
+  } else {
+    const next = `${GITHUB_TOKEN_REF}: ${quoteYamlScalar(token)}`
+    if (idx !== undefined) lines[idx] = next
+    else {
+      while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+      lines.push(next)
+    }
+  }
+  let out = lines.join('\n').replace(/\n+$/g, '')
+  if (out !== '') out += '\n'
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, new TextEncoder().encode(out))
+  try {
+    await chmod(path, 0o600)
+  } catch {
+    // mode is best-effort on filesystems that ignore chmod
+  }
+  return token !== null && token !== '' ? { configured: true, source: 'file' } : { configured: false }
+}
+
+async function handleGithubTokenGet(res: ResLike): Promise<void> {
+  const status = await readGithubTokenStatus()
+  sendJson(res, 200, { ok: true, ...status })
+}
+
+async function handleGithubTokenWrite(req: ReqLike, res: ResLike): Promise<void> {
+  const raw = await readBody(req)
+  let body: { token?: unknown; clear?: unknown }
+  try {
+    body = JSON.parse(raw) as { token?: unknown; clear?: unknown }
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'invalid json' })
+    return
+  }
+  if (body.clear === true) {
+    const status = await writeGithubToken(null)
+    sendJson(res, 200, { ok: true, ...status })
+    return
+  }
+  const token = typeof body.token === 'string' ? body.token.trim() : ''
+  if (token === '') {
+    sendJson(res, 400, { ok: false, error: 'missing token' })
+    return
+  }
+  if (token.length > 256 || !isGithubPat(token)) {
+    sendJson(res, 400, { ok: false, error: 'not a GitHub personal access token' })
+    return
+  }
+  const status = await writeGithubToken(token)
+  sendJson(res, 200, { ok: true, ...status })
+}
+
 /** Diagnostic log for the delete route (host stdout is not reachable from here). */
 async function logDelete(message: string): Promise<void> {
   try {
@@ -1579,6 +1852,8 @@ export function apply(ctx: Context): void {
         { method: 'POST', path: '/api/mobile-nav/marketplace/install', handler: (req, res) => handleMarketplaceInstall(scoped, req, res) },
         { method: 'POST', path: '/api/mobile-nav/marketplace/translate', handler: (req, res) => handleMarketplaceTranslate(scoped, req, res) },
         { method: 'POST', path: '/api/mobile-nav/marketplace/translate-mt', handler: (req, res) => handleMarketplaceTranslateMt(scoped, req, res) },
+        { method: 'GET', path: GITHUB_TOKEN_PATH, handler: (_req, res) => handleGithubTokenGet(res) },
+        { method: 'POST', path: GITHUB_TOKEN_PATH, handler: (req, res) => handleGithubTokenWrite(req, res) },
       ]
       const unregisterMarket = marketRoutes.map((route) => scoped.webServer.register({
         kind: 'exact',

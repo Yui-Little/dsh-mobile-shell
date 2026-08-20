@@ -1,6 +1,6 @@
 {
   "name": "dsh-mobile-shell",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mobile-adaptive DSH web UI: on narrow screens the sidebar rail is hidden and the directory opens as an overlay drawer, so the conversation gets the full width.",
   "type": "module",
   "main": "lib/index.js",

@@ -10,6 +10,7 @@ declare module 'node:fs/promises' {
   export function mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>
   export function writeFile(path: string, data: Uint8Array, options?: { flag?: string }): Promise<void>
   export function readFile(path: string): Promise<Uint8Array>
+  export function chmod(path: string, mode: number): Promise<void>
 }
 
 declare module 'node:fs' {
@@ -20,6 +21,7 @@ declare module 'node:fs' {
 declare module 'node:path' {
   export function join(...paths: string[]): string
   export function resolve(...paths: string[]): string
+  export function dirname(path: string): string
 }
 
 declare module 'node:os' {

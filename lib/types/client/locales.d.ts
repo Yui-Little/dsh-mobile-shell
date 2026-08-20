@@ -72,6 +72,7 @@ export declare const zh: {
     readonly 'jobs.duration.minutes': "{minutes}分{seconds}秒";
     readonly 'jobs.duration.hours': "{hours}小时{minutes}分";
     readonly 'ctx.other': "其他（缓存读写等）~{tokens}";
+    readonly 'github.title': "GitHub Token";
 };
 /** English dictionary, key-identical to the Chinese source of truth. */
 export declare const en: Record<MobileNavKey, string>;

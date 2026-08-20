@@ -80,6 +80,7 @@ export const zh = {
   // Context panel: the delta between pressure (input + cache traffic) and
   // the content breakdown rows.
   'ctx.other': '其他（缓存读写等）~{tokens}',
+  'github.title': 'GitHub Token',
 } as const
 
 /** English dictionary, key-identical to the Chinese source of truth. */
@@ -154,6 +155,7 @@ export const en: Record<MobileNavKey, string> = {
   'jobs.duration.minutes': '{minutes}m {seconds}s',
   'jobs.duration.hours': '{hours}h {minutes}m',
   'ctx.other': 'Other (cache traffic etc.) ~{tokens}',
+  'github.title': 'GitHub Token',
 }
 
 /** Key domain of the `mobileNav` namespace (zh is the source of truth). */
