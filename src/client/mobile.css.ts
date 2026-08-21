@@ -896,7 +896,10 @@ html {
     max-width: 100% !important;
     height: 100% !important;
     max-height: 100% !important;
+    display: flex !important;
     flex-direction: row !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
     border-radius: 0 !important;
     box-shadow: none !important;
     animation: dsh-mobile-shell-page-in .26s var(--ds-ease-out, ease-in-out);
@@ -919,12 +922,16 @@ html {
      The back arrow sits at the rail top; the six sections stack as
      icon+label cells; the content area gets the remaining width. */
   [aria-modal="true"][data-mobile-nav="settings-sheet"] > :first-child {
-    width: 64px !important;
+    width: 72px !important;
     flex: none !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    display: flex !important;
     flex-direction: column !important;
     align-items: center !important;
     gap: 2px !important;
     padding: calc(env(safe-area-inset-top, 0px) + 10px) 0 10px !important;
+    overflow: hidden !important;
     background: var(--dsw-alias-bg-module-platform, rgba(255, 255, 255, 0.02)) !important;
     border-right: 1px solid var(--dsw-alias-border-l1, rgba(255, 255, 255, 0.07)) !important;
   }
@@ -932,27 +939,33 @@ html {
     display: none !important;
   }
   [aria-modal="true"][data-mobile-nav="settings-sheet"] > :first-child > :last-child {
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+    display: flex !important;
     flex-direction: column !important;
     align-items: center !important;
-    width: auto !important;
+    width: 100% !important;
     gap: 2px !important;
-    overflow: visible !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain !important;
     /* The absolute back arrow occupies the rail's top; push the section
        cells below it so the first tab never sits under the arrow. */
     margin-top: 44px !important;
   }
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class*="_navCell"] {
     box-sizing: border-box !important;
-    width: 54px !important;
-    height: 50px !important;
-    min-height: 0 !important;
+    width: 64px !important;
+    min-height: 52px !important;
+    height: auto !important;
+    flex: none !important;
     flex-direction: column !important;
     align-items: center !important;
     justify-content: center !important;
-    gap: 1px !important;
-    padding: 4px 0 !important;
+    gap: 2px !important;
+    padding: 6px 2px !important;
     border-radius: 12px !important;
-    font-size: 9px !important;
+    font-size: 10px !important;
     line-height: 12px !important;
   }
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class*="_navIcon"] {
@@ -964,16 +977,17 @@ html {
     /* The official label flexes (flex:1), which stretches it across the
        cell's full height and top-aligns the glyphs — the active highlight
        then looks off-center. Pin it to its content height so the icon +
-       label stack centers as one unit. */
+       label stack centers as one unit. Allow two lines so names like
+       「视觉工具」 are not ellipsized into an incomplete tab. */
     flex: 0 0 auto !important;
     display: block !important;
-    font-size: 9px !important;
+    font-size: 10px !important;
     line-height: 12px !important;
     text-align: center !important;
-    white-space: nowrap !important;
-    max-width: 54px !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
+    white-space: normal !important;
+    max-width: 64px !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
   }
   /* Content header: "设置" page title on the left, actions on the right. */
   [aria-modal="true"][data-mobile-nav="settings-sheet"] > :last-child > :first-child {
@@ -1043,14 +1057,27 @@ html {
     padding: 10px 8px !important;
     min-height: 0 !important;
   }
-  /* Content: the options scroll area gets bottom breathing room so the last
-     row never sits flush against the sheet's rounded corner. */
+  /* Content column + options scroller: official panel is overflow:hidden
+     at a definite height. flex-basis:auto on this column sizes it to the
+     (very tall) section page — Vision Toolkit especially — so the bottom
+     is clipped and cannot scroll. Bound the column and let options scroll. */
   [aria-modal="true"][data-mobile-nav="settings-sheet"] > :last-child {
-    flex: 1 1 auto !important;
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
     min-height: 0 !important;
+    height: auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
   }
   [aria-modal="true"][data-mobile-nav="settings-sheet"] > :last-child > :last-child {
-    padding: 2px 12px 16px !important;
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain !important;
+    padding: 2px 12px 28px !important;
   }
 
   /* ---------- settings section pages on mobile ----------
@@ -1087,9 +1114,9 @@ html {
      full-width tappable cards. Compact on purpose: on a phone every
      extra px of padding/gap costs a scroll; rows keep 44px+ touch
      targets but nothing more. */
-  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"],
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"]:not([class*="dvt-"]),
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowCard"],
-  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"] {
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"]:not([class*="dvt-"]) {
     box-sizing: border-box !important;
     width: 100% !important;
     min-height: 40px !important;
@@ -1116,7 +1143,7 @@ html {
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowCard"] {
     gap: 6px !important;
   }
-  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_title"],
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_title"]:not([class*="dvt-"]),
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowName"],
   [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_name"] {
     font-size: 14px !important;
@@ -1233,8 +1260,18 @@ html {
   }
 
   /* Vision toolkit form (dvt-*): single-column form, full-width fields,
-     stretch save action. */
-  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-form-grid {
+     stretch save action. Do not reuse the official _card/_title clamps —
+     those suffix selectors match .dvt-panel-title and clip the page. */
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-settings {
+    max-width: none !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    padding: 4px 0 24px !important;
+    overflow: visible !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-form-grid,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-update-grid,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-health-grid {
     grid-template-columns: 1fr !important;
     gap: 8px !important;
   }
@@ -1242,6 +1279,40 @@ html {
     padding: 10px !important;
     border-radius: 10px !important;
     margin-bottom: 8px !important;
+    overflow: visible !important;
+    min-width: 0 !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-panel-title {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+    overflow: visible !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-panel-title h3,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-panel-title p {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    display: block !important;
+    -webkit-line-clamp: unset !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-field > small,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-muted,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-tutorial-link {
+    white-space: normal !important;
+    overflow: visible !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-save-row,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-actions,
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-manual-update {
+    flex-wrap: wrap !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-advanced {
+    overflow: visible !important;
+  }
+  [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-advanced-body {
+    overflow: visible !important;
   }
   [aria-modal="true"][data-mobile-nav="settings-sheet"] .dvt-alert {
     font-size: 12px !important;
@@ -2566,9 +2637,9 @@ li[data-mobile-nav="reasoning-card"] {
    their setting cards with a grey tint inside the mobile settings sheet; pull
    them to the sheet's own white so the whole settings area reads cleanly. */
 @media (max-width: 1023px) {
-  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"],
+  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"]:not([class*="dvt-"]),
   html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowCard"],
-  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"] {
+  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"]:not([class*="dvt-"]) {
     background: var(--dsw-specific-menu, #fff) !important;
   }
 }

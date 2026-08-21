@@ -89,7 +89,7 @@ export function apply(ctx: ClientContext): void {
   // from updated ones. Show a brief toast exactly once per version (tracked
   // in localStorage) so the user can confirm which bundle is running.
   ctx.effect(() => {
-    const VERSION = '0.1.7'
+    const VERSION = '0.1.8'
     const KEY = 'dsh-mobile-shell:last-seen-version'
     try {
       if (localStorage.getItem(KEY) === VERSION) return () => {}
