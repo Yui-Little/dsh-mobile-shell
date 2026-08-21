@@ -100,7 +100,16 @@ interface SettingsService {
   mutate(ns: string, ops: ReadonlyArray<{ op: 'set' | 'unset'; path: readonly string[]; value?: unknown }>, expectedRevision?: number): Promise<void>
 }
 interface DeleteCtx {
-  webServer: { register(route: WebRouteLike): () => void }
+  webServer: {
+    register(route: WebRouteLike): () => void
+    /** Internal exact-route table; used to replace handlers across HMR. */
+    exact?: {
+      get(path: string): WebRouteLike | undefined
+      set(path: string, route: WebRouteLike): void
+      delete(path: string): void
+      has(path: string): boolean
+    }
+  }
   agents?: { get(sessionId: string): AgentLike | undefined }
   sessions?: { get(sessionId: string): unknown }
   sessionPersistence?: { config?: { root?: string } }
@@ -132,6 +141,63 @@ class DeleteSessionError extends Error {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Read a service off a cordis context without throwing when the inject
+ * fiber is inactive (HMR of this plugin leaves HTTP routes serving for a
+ * beat while `childCtx.agents` already throws
+ * "cannot get required service … in inactive context"). Missing services
+ * degrade to undefined; any other error still propagates.
+ */
+function tryService<T>(read: () => T): T | undefined {
+  try {
+    return read()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('inactive context')) return undefined
+    throw error
+  }
+}
+
+/** Drop the cordis tracker proxy so later reads do not depend on this fiber. */
+function unwrapService<T>(value: T | undefined): T | undefined {
+  if (value === undefined || value === null || typeof value !== 'object') return value
+  const original = (value as Record<symbol, unknown>)[Symbol.for('cordis.original')]
+  return (original as T | undefined) ?? value
+}
+
+function captureServices(childCtx: DeleteCtx): DeleteCtx {
+  return {
+    webServer: childCtx.webServer,
+    agents: unwrapService(tryService(() => childCtx.agents)),
+    sessions: unwrapService(tryService(() => childCtx.sessions)),
+    sessionPersistence: unwrapService(tryService(() => childCtx.sessionPersistence)),
+    workspaceRegistry: unwrapService(tryService(() => childCtx.workspaceRegistry)),
+    settings: unwrapService(tryService(() => childCtx.settings)),
+    llm: unwrapService(tryService(() => childCtx.llm)),
+    loader: unwrapService(tryService(() => childCtx.loader)),
+  }
+}
+
+/**
+ * Register an exact route. After HMR the previous fiber may still own the
+ * path (`webServer.register` throws on duplicates and rolls the reload
+ * back onto the inactive fiber — the "inactive context" 500). Patch the
+ * live handler in place when the path is already claimed, so the HTTP
+ * table always points at this apply's closures.
+ */
+function registerExact(webServer: DeleteCtx['webServer'], path: string, handler: WebRouteLike['handler']): () => void {
+  const raw = unwrapService(webServer) ?? webServer
+  const existing = raw.exact?.get(path)
+  if (existing !== undefined) {
+    existing.handler = handler
+    return () => {
+      const current = raw.exact?.get(path)
+      if (current !== undefined && current.handler === handler) raw.exact?.delete(path)
+    }
+  }
+  return raw.register({ kind: 'exact', path, handler })
 }
 
 function readBody(req: ReqLike, limit: number = MAX_BODY_BYTES): Promise<string> {
@@ -198,7 +264,7 @@ async function handleStoreImage(scoped: DeleteCtx, req: ReqLike, res: ResLike): 
     if (bytes.length === 0) throw new DeleteSessionError(400, 'empty body')
     const name = String(payload.name ?? 'image.png').replace(/[^\w.\-]/g, '_').slice(0, 120)
     const sessionId = String(payload.sessionId ?? '')
-    const workspace = scoped.workspaceRegistry?.list().find((w) => sessionId !== '' && w.sessionIds.includes(sessionId))
+    const workspace = tryService(() => scoped.workspaceRegistry)?.list().find((w) => sessionId !== '' && w.sessionIds.includes(sessionId))
     const root = workspace?.path ?? (process.env.HOME ? join(process.env.HOME, 'dsh') : process.cwd())
     const dir = join(root, '.dsh-uploads')
     await mkdir(dir, { recursive: true })
@@ -245,7 +311,7 @@ interface PiAiSection {
  * with a write (stale revisions are refused by the settings service).
  */
 async function handleReasoningGet(scoped: DeleteCtx, res: ResLike): Promise<void> {
-  const settings = scoped.settings
+  const settings = tryService(() => scoped.settings)
   if (settings === undefined) {
     sendJson(res, 501, { ok: false, error: 'settings service is absent' })
     return
@@ -331,7 +397,7 @@ const DEFAULT_ROUTE_LEVEL = 'max'
  * tiers only — reasoningEfforts is protocol-neutral.)
  */
 async function backfillReasoningDefaults(scoped: DeleteCtx, attempt = 0): Promise<number> {
-  const settings = scoped.settings
+  const settings = tryService(() => scoped.settings)
   if (settings === undefined || attempt > 3) return 0
   const descriptor = settings.describe({ redactSecrets: true }).find((entry) => entry.ns === PI_AI_NS)
   if (descriptor === undefined) return 0
@@ -841,7 +907,7 @@ interface HotLoadOutcome {
  * restart needed. Entries already ACTIVE are skipped (the running instance is
  * already the official one). */
 async function hotLoadInstalled(scoped: DeleteCtx, names: string[]): Promise<HotLoadOutcome> {
-  const loader = scoped.loader
+  const loader = tryService(() => scoped.loader)
   if (loader === undefined) return { hotLoaded: false, hotLoadError: 'loader service is absent' }
   if (names.length === 0) return { hotLoaded: false, hotLoadError: '没有检测到新增的软件包' }
   const isActiveEntry = (name: string): boolean => {
@@ -875,7 +941,9 @@ async function hotLoadInstalled(scoped: DeleteCtx, names: string[]): Promise<Hot
 }
 
 async function handleMarketplaceTranslate(scoped: DeleteCtx, req: ReqLike, res: ResLike): Promise<void> {
-  if (scoped.llm === undefined || scoped.settings === undefined) {
+  const llm = tryService(() => scoped.llm)
+  const settings = tryService(() => scoped.settings)
+  if (llm === undefined || settings === undefined) {
     sendJson(res, 501, { ok: false, error: 'llm service is absent' })
     return
   }
@@ -891,7 +959,7 @@ async function handleMarketplaceTranslate(scoped: DeleteCtx, req: ReqLike, res: 
     sendJson(res, 400, { ok: false, error: 'text is required' })
     return
   }
-  const def = scoped.settings.get('agent-default-model') as { provider?: string; model?: string } | undefined
+  const def = settings.get('agent-default-model') as { provider?: string; model?: string } | undefined
   const provider = def?.provider ?? 'deepseek-official'
   const model = def?.model ?? 'deepseek-v4-flash'
   try {
@@ -900,7 +968,7 @@ async function handleMarketplaceTranslate(scoped: DeleteCtx, req: ReqLike, res: 
       content: [{ type: 'text', text: `Translate the following plugin description into Simplified Chinese. Output ONLY the translation, no commentary:\n\n${text}` }],
     }]
     let translation = ''
-    for await (const chunk of scoped.llm.stream({ provider, model, messages })) {
+    for await (const chunk of llm.stream({ provider, model, messages })) {
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') translation += chunk.text
     }
     translation = translation.trim()
@@ -1299,10 +1367,10 @@ function sanitizeTranslation(text: string): string {
 /** Long READMEs are split and translated through several parallel LLM streams
  * so the whole thing lands in a few seconds instead of a minute. */
 async function translateWithLlmConcurrent(scoped: DeleteCtx, prose: string): Promise<string> {
-  if (scoped.llm === undefined) throw new Error('llm service is absent')
-  if (scoped.llm === undefined) throw new Error('llm service is absent')
-  const llm = scoped.llm
-  const def = scoped.settings?.get('agent-default-model') as { provider?: string; model?: string } | undefined
+  const llm = tryService(() => scoped.llm)
+  if (llm === undefined) throw new Error('llm service is absent')
+  const settings = tryService(() => scoped.settings)
+  const def = settings?.get('agent-default-model') as { provider?: string; model?: string } | undefined
   const provider = def?.provider ?? 'deepseek-official'
   const model = def?.model ?? 'deepseek-v4-flash'
   const pieces: string[] = []
@@ -1378,7 +1446,7 @@ async function handleMarketplaceTranslateMt(scoped: DeleteCtx, req: ReqLike, res
     }
   }
   // Fallback: concurrent LLM translation (fast even for long READMEs).
-  if (scoped.llm === undefined) {
+  if (tryService(() => scoped.llm) === undefined) {
     sendJson(res, 200, { ok: false, error: '机器翻译不可用' })
     return
   }
@@ -1419,7 +1487,7 @@ interface ReasoningWriteRequest {
  * from the raw user section and replaced with one `set` op.
  */
 async function handleReasoningWrite(scoped: DeleteCtx, req: ReqLike, res: ResLike): Promise<void> {
-  const settings = scoped.settings
+  const settings = tryService(() => scoped.settings)
   if (settings === undefined) {
     sendJson(res, 501, { ok: false, error: 'settings service is absent' })
     return
@@ -1661,7 +1729,8 @@ async function deleteSessionDurable(scoped: DeleteCtx, sessionId: string): Promi
   // wait for quiescence within a bound, then detach the session from the
   // store — emitting `session/disposed` so clients drop the row — before
   // removing its durable log.
-  const agent = scoped.agents?.get?.(sessionId)
+  const agents = tryService(() => scoped.agents)
+  const agent = agents?.get?.(sessionId)
   if (agent !== undefined) {
     try {
       agent.cancel({ kind: 'user' })
@@ -1670,14 +1739,16 @@ async function deleteSessionDurable(scoped: DeleteCtx, sessionId: string): Promi
       // Best-effort: a failed cancel still proceeds with the removal below.
     }
   }
-  const liveSession = scoped.sessions?.get(sessionId)
+  const sessions = tryService(() => scoped.sessions)
+  const sessionPersistence = tryService(() => scoped.sessionPersistence)
+  const liveSession = sessions?.get(sessionId)
   if (liveSession !== undefined) {
     try {
       // The persistence backend writes events on a throttled batch delay, so
       // a freshly created / recently written session may still hold its log
       // in memory. Flush first, otherwise the removal below deletes nothing
       // and the delayed flush resurrects the file afterwards.
-      const sessionsSvc = scoped.sessions as unknown as { flush(session: unknown): Promise<boolean> }
+      const sessionsSvc = sessions as unknown as { flush(session: unknown): Promise<boolean> }
       await sessionsSvc.flush(liveSession)
     } catch {
       // Best-effort: a failed flush leaves the log partially on disk; the
@@ -1686,14 +1757,14 @@ async function deleteSessionDurable(scoped: DeleteCtx, sessionId: string): Promi
     // Remove the durable log BEFORE detaching: detaching emits
     // `session/disposed`, whose listeners may append teardown events — those
     // would land in a log we are about to delete and resurrect it.
-    if (scoped.sessionPersistence !== undefined) {
-      await removeSessionLog(scoped.sessionPersistence, sessionId)
+    if (sessionPersistence !== undefined) {
+      await removeSessionLog(sessionPersistence, sessionId)
     }
     try {
       // detachEntered/liveEntryFor are private on the store; the removal is
       // idempotent (a no-op for an already-detached entry), so the fiber's
       // own teardown later re-detaches safely.
-      const store = scoped.sessions as unknown as {
+      const store = sessions as unknown as {
         liveEntryFor(session: unknown): unknown
         detachEntered(entry: unknown): void
       }
@@ -1707,13 +1778,13 @@ async function deleteSessionDurable(scoped: DeleteCtx, sessionId: string): Promi
     // (e.g. an agent writing its final stop event). Give the teardown a
     // moment to flush, then remove any resurrected log.
     await delay(RESURRECTION_GUARD_DELAY_MS)
-    if (scoped.sessionPersistence !== undefined) {
-      await removeSessionLog(scoped.sessionPersistence, sessionId)
+    if (sessionPersistence !== undefined) {
+      await removeSessionLog(sessionPersistence, sessionId)
     }
-  } else if (scoped.sessionPersistence !== undefined) {
-    await removeSessionLog(scoped.sessionPersistence, sessionId)
+  } else if (sessionPersistence !== undefined) {
+    await removeSessionLog(sessionPersistence, sessionId)
   }
-  const registry = scoped.workspaceRegistry
+  const registry = tryService(() => scoped.workspaceRegistry)
   if (registry !== undefined) {
     for (const workspace of registry.list()) {
       if (workspace.sessionIds.includes(sessionId)) await workspace.detachSession(sessionId)
@@ -1762,11 +1833,12 @@ export function apply(ctx: Context): void {
   ctx.inject(
     ['webServer', 'agents', 'sessions', 'workspaceRegistry', 'sessionPersistence', 'settings', 'llm', 'loader'],
     (childCtx) => {
-      const scoped = childCtx as unknown as DeleteCtx
-      const unregisterDelete = scoped.webServer.register({
-        kind: 'exact',
-        path: ROUTE_PATH,
-        handler: (req, res) => {
+      const routes = childCtx as unknown as DeleteCtx
+      // Capture unwrapped service instances NOW, while this inject fiber is
+      // active. Route handlers outlive the fiber across HMR; reading through
+      // the proxy later throws "inactive context".
+      const scoped = captureServices(routes)
+      const unregisterDelete = registerExact(routes.webServer, ROUTE_PATH, (req, res) => {
           // Double guard: any escape from handleDelete must still answer
           // JSON — the webserver's own catch would reply with an EMPTY body
           // (400), which the browser client cannot parse and would surface
@@ -1780,22 +1852,14 @@ export function apply(ctx: Context): void {
               // response already written; nothing left to do
             }
           })
-        },
-      })
-      const unregisterStore = scoped.webServer.register({
-        kind: 'exact',
-        path: STORE_IMAGE_PATH,
-        handler: (req, res) => {
+        })
+      const unregisterStore = registerExact(routes.webServer, STORE_IMAGE_PATH, (req, res) => {
           handleStoreImage(scoped, req, res).catch((error) => {
             const message = error instanceof Error ? error.message : String(error)
             sendJson(res, 500, { ok: false, error: message })
           })
-        },
-      })
-      const unregisterImage = scoped.webServer.register({
-        kind: 'exact',
-        path: IMAGE_GET_PATH,
-        handler: (req, res) => {
+        })
+      const unregisterImage = registerExact(routes.webServer, IMAGE_GET_PATH, (req, res) => {
           handleGetImage(scoped, req, res).catch((error) => {
             const message = error instanceof Error ? error.message : String(error)
             try {
@@ -1804,12 +1868,8 @@ export function apply(ctx: Context): void {
               // response already written
             }
           })
-        },
-      })
-      const unregisterReasoning = scoped.webServer.register({
-        kind: 'exact',
-        path: REASONING_GET_PATH,
-        handler: (req, res) => {
+        })
+      const unregisterReasoning = registerExact(routes.webServer, REASONING_GET_PATH, (req, res) => {
           const run = req.method === 'POST'
             ? () => handleReasoningWrite(scoped, req, res)
             : () => handleReasoningGet(scoped, res)
@@ -1821,8 +1881,7 @@ export function apply(ctx: Context): void {
               // response already written
             }
           })
-        },
-      })
+        })
       // Auto-backfill: keep every hand-declared custom model on the default
       // reasoning set. Models added through the official settings UI carry no
       // `reasoningEfforts`; this listener injects the defaults the moment the
@@ -1855,27 +1914,35 @@ export function apply(ctx: Context): void {
         { method: 'GET', path: GITHUB_TOKEN_PATH, handler: (_req, res) => handleGithubTokenGet(res) },
         { method: 'POST', path: GITHUB_TOKEN_PATH, handler: (req, res) => handleGithubTokenWrite(req, res) },
       ]
-      const unregisterMarket = marketRoutes.map((route) => scoped.webServer.register({
-        kind: 'exact',
-        path: route.path,
-        handler: (req, res) => {
-          if ((req.method ?? 'GET') !== route.method) {
+      const byPath = new Map<string, Map<string, (req: ReqLike, res: ResLike) => Promise<void> | void>>()
+      for (const route of marketRoutes) {
+        let methods = byPath.get(route.path)
+        if (methods === undefined) {
+          methods = new Map()
+          byPath.set(route.path, methods)
+        }
+        methods.set(route.method, route.handler)
+      }
+      const unregisterMarket = [...byPath.entries()].map(([path, methods]) => registerExact(routes.webServer, path, (req, res) => {
+          const method = req.method ?? 'GET'
+          const handler = methods.get(method)
+          if (handler === undefined) {
             try {
-              sendJson(res, 405, { ok: false, error: `method ${req.method} not allowed` })
+              sendJson(res, 405, { ok: false, error: `method ${method} not allowed` })
             } catch {
               // response already written
             }
             return
           }
-          Promise.resolve(route.handler(req, res)).catch((error) => {
+          Promise.resolve(handler(req, res)).catch((error) => {
             const message = error instanceof Error ? error.message : String(error)
             try {
               sendJson(res, 500, { ok: false, error: message })
             } catch {
               // response already written
             }
-          })        },
-      }))
+          })
+        }))
 
       return () => {
         offSettings()

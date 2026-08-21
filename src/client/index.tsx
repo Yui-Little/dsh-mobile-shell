@@ -57,12 +57,39 @@ export function apply(ctx: ClientContext): void {
 
   const t = ctx.locale.bind(NS)
 
+  // Structural composer detection, independent of our data-mobile-nav-composer
+  // stamp. The official composer textarea lives inside the grow wrapper
+  // ([class$="_grow"], the only _grow class in the whole client graph) as a
+  // sibling of the hidden mirror ([data-input-mirror]) — a stable, hashed-name
+  // and attribute based fingerprint that works even in the microtask window
+  // before the MutationObserver stamps our marker after a React commit.
+  // The card is the closest [class$="_card"] ancestor of the textarea.
+  const composerCardOf = (node: EventTarget | null): HTMLElement | null => {
+    if (!(node instanceof Element)) return null
+    const textarea = node instanceof HTMLTextAreaElement ? node : node.closest('textarea')
+    if (textarea === null) return null
+    const card = textarea.closest<HTMLElement>('[class$="_card"]')
+    if (card === null) return null
+    if (!card.hasAttribute('data-mobile-nav-composer')) {
+      const parent = textarea.parentElement
+      if (parent === null || parent.querySelector('[data-input-mirror]') === null) return null
+    }
+    return card
+  }
+  /** (Re-)stamp a composer card's markers; idempotent, safe on any pass. */
+  const stampComposerCard = (card: HTMLElement, textarea: HTMLTextAreaElement): void => {
+    card.setAttribute('data-mobile-nav-composer', '')
+    const heroEmpty = card.closest('[data-phase="hero"]') !== null && textarea.value === ''
+    if (heroEmpty) card.setAttribute('data-mobile-nav-hero-empty', '')
+    else card.removeAttribute('data-mobile-nav-hero-empty')
+  }
+
   // One-shot update notice: after a plugin update the page must be reloaded
   // to pick up the new client bundle, and stale tabs are hard to tell apart
   // from updated ones. Show a brief toast exactly once per version (tracked
   // in localStorage) so the user can confirm which bundle is running.
   ctx.effect(() => {
-    const VERSION = '0.1.0'
+    const VERSION = '0.1.6'
     const KEY = 'dsh-mobile-shell:last-seen-version'
     try {
       if (localStorage.getItem(KEY) === VERSION) return () => {}
@@ -167,13 +194,26 @@ export function apply(ctx: ClientContext): void {
     // error instead of degrading the image to a file reference.
     const originalDraftImages = conversation.draftImages.bind(conversation)
     input.sink = (session, text, imageIds, mode) => {
-      const files = pendingAttachmentsOf(session.sessionId)
-      if (files.length > 0) {
-        appendedOriginal = text
-        const appended = buildAttachmentText(files, t)
-        text = text === '' ? appended : `${text}\n\n${appended}`
+      try {
+        const sessionId = session?.sessionId
+        if (typeof sessionId === 'string' && sessionId !== '') {
+          const files = pendingAttachmentsOf(sessionId)
+          if (files.length > 0) {
+            appendedOriginal = text
+            const appended = buildAttachmentText(files, t)
+            text = text === '' ? appended : `${text}\n\n${appended}`
+          }
+        }
+      } catch {
+        // Attachment wrapping must never block a send.
       }
-      originalSink(session, text, imageIds, mode)
+      // CRITICAL: the original sink returns the admission Promise that the
+      // input machine's settleSubmit() awaits to emit "submit-settled" (which
+      // flips the phase back from "submitting" → "plain"). Without `return`,
+      // the machine receives undefined, crashes on `undefined.then(...)`
+      // BEFORE publishing the phase change, and the composer is left
+      // readOnly/"submitting" forever — a dead input box after every send.
+      return originalSink(session, text, imageIds, mode)
     }
     // Original draft text while files are being appended (see sink wrap):
     // the core restores the SUBMITTED text on failure, which would leave the
@@ -359,6 +399,19 @@ export function apply(ctx: ClientContext): void {
     }
     const sync = (): void => {
       scheduled = false
+      // Composer markers first, BEFORE the drawer-switch gate: after a send /
+      // session switch the whole chat tree re-mounts, and if this stamp lags
+      // behind the React commit the official textarea can be focused with the
+      // IME closed while our CSS (and the tap recovery handlers) key off the
+      // stamp. The stamp is cheap and idempotent — never let the gate delay it.
+      for (const card of document.querySelectorAll<HTMLElement>('[data-phase] [class*="_card"]')) {
+        const textarea = card.querySelector('textarea')
+        if (textarea !== null) stampComposerCard(card, textarea)
+        else {
+          card.removeAttribute('data-mobile-nav-composer')
+          card.removeAttribute('data-mobile-nav-hero-empty')
+        }
+      }
       if (deferred) return
       // 1) Modal structure: the settings dialog is a near-full-width sheet
       //    (nav tab list = last child of the header row holds <button>s);
@@ -400,20 +453,9 @@ export function apply(ctx: ClientContext): void {
         if (scroll.querySelector('p, li, [class*="_text_"]') !== null) scroll.setAttribute('data-mobile-nav', 'markdown')
         else scroll.removeAttribute('data-mobile-nav')
       }
-      // 4) Composer card (any phase): bottom-row layout (was
-      //    [class*="_card"]:has(textarea)). Hero empty state gets its own
-      //    marker (was :has(textarea:placeholder-shown)).
-      for (const card of document.querySelectorAll<HTMLElement>('[data-phase] [class*="_card"]')) {
-        const textarea = card.querySelector('textarea')
-        if (textarea !== null) {
-          card.setAttribute('data-mobile-nav-composer', '')
-          if (textarea.value === '') card.setAttribute('data-mobile-nav-hero-empty', '')
-          else card.removeAttribute('data-mobile-nav-hero-empty')
-        } else {
-          card.removeAttribute('data-mobile-nav-composer')
-          card.removeAttribute('data-mobile-nav-hero-empty')
-        }
-      }
+      // (Composer card markers — step 4 — now run at the top of sync(),
+      //  before the drawer-switch gate, so the stamp never lags a React
+      //  re-mount after send.)
       // 5) The Files header button is an entry for the dsh-web-ui explorer
       //    sheet; without the suite installed it is a dead control — hide it.
       const hasExplorer = document.querySelector('[data-aionui-explorer-col], .aionui-explorer-handle') !== null
@@ -449,7 +491,6 @@ export function apply(ctx: ClientContext): void {
         if (!/(turns|steps|\bLLM\b|轮|步)/.test(text)) continue
         if (root.querySelector('textarea') !== null) continue
         root.setAttribute('data-mobile-nav', 'stats')
-        return
       }
     }
     const schedule = (): void => {
@@ -465,7 +506,10 @@ export function apply(ctx: ClientContext): void {
       const target = event.target as HTMLTextAreaElement | null
       if (target === null || target.tagName !== 'TEXTAREA') return
       const card = target.closest<HTMLElement>('[data-phase="hero"] [class$="_card"]')
-      if (card === null) return
+      if (card === null) {
+        target.closest<HTMLElement>('[class$="_card"]')?.removeAttribute('data-mobile-nav-hero-empty')
+        return
+      }
       if (target.value === '') card.setAttribute('data-mobile-nav-hero-empty', '')
       else card.removeAttribute('data-mobile-nav-hero-empty')
     }
@@ -734,7 +778,7 @@ export function apply(ctx: ClientContext): void {
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
       const target = event.target as HTMLElement | null
       if (target === null || !(target instanceof HTMLTextAreaElement)) return
-      if (target.closest('[data-mobile-nav-composer]') === null) return
+      if (composerCardOf(target) === null) return
       event.preventDefault()
       event.stopPropagation()
       const start = target.selectionStart ?? target.value.length
@@ -746,21 +790,18 @@ export function apply(ctx: ClientContext): void {
     return () => document.removeEventListener('keydown', onKeyDown, true)
   }, 'dsh-mobile-shell: enter-to-newline')
 
-  // Tapping the "/" command button or the "+" attach button must NOT open
-  // the soft keyboard: the official command button's onMouseDown refocuses
-  // the textarea (keepFocus). Cancelling the pointerdown suppresses the
-  // compatibility mouse events and the focus default for those two controls
-  // only; their click handlers still fire, so the menu / picker open
-  // normally.
+  // Tapping "/" or "+" must NOT open the IME: official keepFocus on those
+  // buttons refocuses the textarea. preventDefault only on those two —
+  // NEVER on Send/Stop. Pointerdown preventDefault on the send button
+  // suppresses the compatibility click on Android WebView, so new chats
+  // cannot send at all.
   ctx.effect(() => {
     const onPointerDown = (event: PointerEvent): void => {
       if (!(event.target instanceof Element)) return
-      const el = event.target.closest(
-        '[data-mobile-nav-composer] button[aria-haspopup="listbox"], [data-mobile-nav-composer] [data-mobile-nav="attach"]',
-      )
+      if (composerCardOf(event.target) === null) return
+      const el = event.target.closest('button[aria-haspopup="listbox"], [data-mobile-nav="attach"]')
       if (el === null) return
       event.preventDefault()
-      event.stopPropagation()
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => {
@@ -769,56 +810,327 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-mobile-shell: no-keyboard command/attach taps')
 
   // After send, the official InputBar focuses the textarea from a React
-  // effect (`el.focus({ preventScroll: true })` when `locked` flips back).
-  // On Android WebView that is not a user gesture: the IME stays closed and
-  // the caret often never paints, yet the element is already activeElement
-  // so a later tap is a no-op. Drop programmatic focus, and if the user
-  // taps an already-focused composer while the keyboard is down, blur first
-  // so the same tap re-focuses as a real gesture and the IME comes up.
+  // effect (`el.focus({ preventScroll: true })` when `locked` flips back),
+  // and keepFocus on the send button also focuses on mousedown. On Android
+  // WebView/Chrome that programmatic focus is not a user gesture: the IME
+  // stays closed, and once the element is activeElement a later tap is a
+  // no-op (or the caret never paints) until a full reload. Worse, the submit
+  // cycle itself toggles `readOnly` (machineBusy): the IME closes while
+  // readOnly, and when it flips back the textarea is STILL focused with the
+  // IME closed — and no focus event fires, so nothing can catch it. This
+  // block makes the composer textarea impossible to leave stuck in that
+  // state:
+  //   1) any focus that did NOT come from a real user tap on the textarea is
+  //      dropped — and re-dropped across a few frames while React's focus
+  //      effects re-run after the commit;
+  //   2) the readOnly/disabled flip after submit is watched: when the field
+  //      becomes editable again while still focused, it is blurred, so the
+  //      next tap is a fresh gesture that opens the IME;
+  //   3) a tap on an already-focused empty composer with the keyboard closed
+  //      blurs first, so the SAME tap re-focuses as a real gesture;
+  //   4) pointerup on the textarea forces focus() inside the tap gesture,
+  //      guaranteeing the IME comes up even when native focus-on-tap was
+  //      suppressed by the blur;
+  //   5) every check is structural (official [data-input-mirror] sibling),
+  //      independent of our marker stamp, and the stamp is self-healed on
+  //      focus/pointer events so CSS keyed on it never goes stale.
   ctx.effect(() => {
     const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
-    const isComposerTextarea = (node: EventTarget | null): node is HTMLTextAreaElement =>
-      node instanceof HTMLTextAreaElement && node.closest('[data-mobile-nav-composer]') !== null
+    // Conservative keyboard probe. With `interactive-widget=resizes-content`
+    // the layout viewport itself shrinks when the IME opens, so the naive
+    // innerHeight - visualViewport.height gap is ~0 while typing; a big gap
+    // (>20% of the screen AND >120px) is the only case we trust as
+    // "keyboard definitely open". False here only ever costs a redundant
+    // blur+refocus on an EMPTY draft (see the value check in onPointerDown).
     const keyboardOpen = (): boolean => {
       const viewport = window.visualViewport
       if (viewport === null) return false
-      return window.innerHeight - viewport.height > 120
+      const gap = window.innerHeight - viewport.height
+      return gap > 120 && gap > window.innerHeight * 0.2
     }
-    let userTappedComposer = false
+    // A real user gesture on the textarea itself (IME intent). Taps on the
+    // surrounding buttons do NOT count — keepFocus there must stay droppable.
+    let userTappedTextarea = false
     let tapTimer = 0
-    const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target
-      const textarea =
-        target instanceof HTMLTextAreaElement
-          ? target
-          : target instanceof Element
-            ? target.closest('textarea')
-            : null
-      if (textarea === null || !isComposerTextarea(textarea)) return
-      userTappedComposer = true
+    const markUserTap = (): void => {
+      userTappedTextarea = true
       if (tapTimer !== 0) window.clearTimeout(tapTimer)
       tapTimer = window.setTimeout(() => {
         tapTimer = 0
-        userTappedComposer = false
-      }, 800)
-      // Already focused from a programmatic send-focus, keyboard closed:
-      // blur so this same tap re-focuses as a user gesture and the IME opens.
-      if (document.activeElement === textarea && !keyboardOpen()) textarea.blur()
+        userTappedTextarea = false
+      }, 1500)
+    }
+    // Watch the submit cycle's readOnly/disabled flip on every composer
+    // textarea we meet. readOnly makes the browser drop the IME; when it
+    // flips back the field is still activeElement, and blurring there is the
+    // only way the next tap counts as a fresh gesture.
+    const observedTextareas = new WeakSet<HTMLTextAreaElement>()
+    const flipObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const el = mutation.target
+        if (!(el instanceof HTMLTextAreaElement)) continue
+        if (el.readOnly || el.disabled) continue
+        if (document.activeElement !== el) continue
+        if (composerCardOf(el) === null) continue
+        el.blur()
+      }
+    })
+    const watchReadOnlyFlips = (textarea: HTMLTextAreaElement | null): void => {
+      if (textarea === null || observedTextareas.has(textarea)) return
+      observedTextareas.add(textarea)
+      flipObserver.observe(textarea, { attributes: true, attributeFilter: ['readonly', 'disabled'] })
+    }
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!(event.target instanceof Element)) return
+      const card = composerCardOf(event.target)
+      if (card === null) return
+      const textarea = card.querySelector<HTMLTextAreaElement>('textarea')
+      if (textarea === null) return
+      stampComposerCard(card, textarea)
+      watchReadOnlyFlips(textarea)
+      if (event.target !== textarea) return
+      markUserTap()
+      // Already focused from a programmatic send-focus / readOnly flip-back,
+      // keyboard closed, draft empty (i.e. nothing to place a caret into):
+      // blur so THIS tap re-focuses as a real gesture and the IME opens.
+      if (document.activeElement === textarea && !keyboardOpen() && textarea.value === '') textarea.blur()
+    }
+    // Legacy-touch fallback (older WebViews without PointerEvent coverage):
+    // the flag is what lets onFocusIn tell a user tap from programmatic focus.
+    const onTouchStart = (event: TouchEvent): void => {
+      if (!(event.target instanceof Element)) return
+      if (event.target === composerCardOf(event.target)?.querySelector('textarea')) markUserTap()
     }
     const onFocusIn = (event: FocusEvent): void => {
-      if (!isComposerTextarea(event.target)) return
-      if (userTappedComposer) return
-      event.target.blur()
+      const focused = event.target
+      if (!(focused instanceof HTMLTextAreaElement)) return
+      const card = composerCardOf(focused)
+      if (card === null) return
+      stampComposerCard(card, focused)
+      watchReadOnlyFlips(focused)
+      if (userTappedTextarea) return
+      // Programmatic focus (send / session re-mount / keepFocus): drop it,
+      // and keep dropping while React's focus effects re-run, so no
+      // programmatic focus survives with the IME closed. Stops the moment a
+      // real tap lands or the element actually stays blurred.
+      const drop = (): void => {
+        if (userTappedTextarea) return
+        if (document.activeElement !== focused) return
+        focused.blur()
+        requestAnimationFrame(drop)
+      }
+      drop()
+    }
+    // Rescue: a tap on the textarea that did NOT end up focused (native
+    // focus-on-tap suppressed after our pointerdown blur) is re-focused here,
+    // inside the tap gesture, so the IME opens. readOnly (busy) / disabled
+    // (workspace trigger) composers are left to their own handlers.
+    const onPointerUp = (event: PointerEvent): void => {
+      if (!(event.target instanceof HTMLTextAreaElement)) return
+      const card = composerCardOf(event.target)
+      if (card === null) return
+      const textarea = card.querySelector<HTMLTextAreaElement>('textarea')
+      if (textarea === null || textarea !== event.target) return
+      if (textarea.disabled || textarea.readOnly) return
+      if (document.activeElement === textarea) return
+      markUserTap()
+      textarea.focus({ preventScroll: true })
     }
     document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('touchstart', onTouchStart, true)
+    document.addEventListener('pointerup', onPointerUp, true)
     document.addEventListener('focusin', onFocusIn, true)
     return () => {
+      flipObserver.disconnect()
       document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('touchstart', onTouchStart, true)
+      document.removeEventListener('pointerup', onPointerUp, true)
       document.removeEventListener('focusin', onFocusIn, true)
       if (tapTimer !== 0) window.clearTimeout(tapTimer)
     }
   }, 'dsh-mobile-shell: restore IME after send')
+
+  // Composer self-heal + diagnostics. The symptom "after one send the input
+  // looks normal but taps do absolutely nothing" is the signature of the
+  // textarea stuck DISABLED/readOnly while the machine is NOT busy: a
+  // disabled textarea is painted identically (the composer text lives in the
+  // transparent backdrop), and it swallows every tap with zero feedback.
+  // This effect:
+  //   1) watches the composer textarea state after every send (readOnly flip)
+  //      and on every composer tap;
+  //   2) when a composer textarea is disabled/readOnly while its own
+  //      data-phase says the machine is NOT submitting/adjudicating and it is
+  //      NOT the hero workspace-trigger, force-re-enables it (one-shot per
+  //      stuck instance — React only re-locks on a state change);
+  //   3) when elementFromPoint at the textarea center resolves to a
+  //      non-textarea inside the card, neutralizes that covering layer;
+  //   4) shows a small verdict strip (auto-hides) so the root cause is
+  //      visible when the fix does not fully apply.
+  ctx.effect(() => {
+    const narrow = window.matchMedia('(max-width: 1023px)')
+    if (!narrow.matches) return () => {}
+    let panel: HTMLElement | null = null
+    let hideTimer = 0
+    let lastVerdict = ''
+    const showPanel = (verdict: string): void => {
+      if (lastVerdict === verdict && panel !== null) return
+      lastVerdict = verdict
+      panel?.remove()
+      panel = document.createElement('div')
+      panel.setAttribute('data-mobile-nav', 'composer-diag')
+      panel.style.cssText =
+        'position:fixed;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));z-index:99999;' +
+        'background:rgba(12,12,18,.94);color:#fff;font:11px/17px ui-monospace,Menlo,monospace;padding:8px 10px;' +
+        'border-radius:10px;pointer-events:none;white-space:pre-wrap;word-break:break-all;'
+      panel.textContent = verdict
+      document.body.appendChild(panel)
+      if (hideTimer !== 0) window.clearTimeout(hideTimer)
+      hideTimer = window.setTimeout(() => {
+        panel?.remove()
+        panel = null
+      }, 12000)
+    }
+    const composerTextareas = (): HTMLTextAreaElement[] => [
+      ...document.querySelectorAll<HTMLElement>('[data-input-mirror]'),
+    ]
+      .map((mirror) => mirror.parentElement?.querySelector<HTMLTextAreaElement>('textarea'))
+      .filter((ta): ta is HTMLTextAreaElement => ta instanceof HTMLTextAreaElement)
+
+    // A stuck "submitting"/"adjudicating" phase (input machine dead-locked)
+    // must be force-unlocked after a grace period: submitting settles in
+    // milliseconds, so a phase that lingers means the settlement was lost.
+    const BUSY_LINGER_MS = 30000
+    const busySince = new WeakMap<HTMLTextAreaElement, number>()
+
+    const diagnose = (): void => {
+      const lines: string[] = []
+      for (const textarea of composerTextareas()) {
+        const card = textarea.closest<HTMLElement>('[class$="_card"]')
+        const phase = textarea.getAttribute('data-phase') ?? '?'
+        const busy = phase === 'submitting' || phase === 'adjudicating'
+        const heroTrigger =
+          textarea.closest('[data-phase="hero"]') !== null &&
+          textarea.disabled &&
+          textarea.getAttribute('aria-haspopup') !== null
+        const rect = textarea.getBoundingClientRect()
+        const cx = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2))
+        const cy = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
+        const top = document.elementFromPoint(cx, cy)
+        const hitTextarea = top === textarea || (top !== null && textarea.contains(top))
+        const state = `${textarea.disabled ? 'disabled' : 'enabled'}/${textarea.readOnly ? 'readOnly' : 'editable'}`
+        // Busy-phase emergency unlock: the phase is authoritative only while
+        // it settles quickly; a lingering busy phase is a dead machine.
+        if (busy) {
+          const since = busySince.get(textarea) ?? Date.now()
+          busySince.set(textarea, since)
+          if (Date.now() - since > BUSY_LINGER_MS) {
+            textarea.readOnly = false
+            lines.push(`heal: ta[${phase}] 超过 ${Math.round(BUSY_LINGER_MS / 1000)}s 未结算，已强制解锁只读`)
+          }
+        } else {
+          busySince.delete(textarea)
+        }
+        // Self-heal: locked while the machine is idle and NOT the hero
+        // workspace trigger → force re-enable (React re-locks only on state
+        // changes; no re-render is coming).
+        if (!busy && !heroTrigger && (textarea.disabled || textarea.readOnly)) {
+          textarea.disabled = false
+          textarea.readOnly = false
+          lines.push(`heal: ta[${phase}] ${state} 机器空闲仍锁死，已解除禁用/只读`)
+        }
+        // Covering layer inside the card: neutralize it.
+        if (!hitTextarea && top !== null && card !== null && card.contains(top) && !(top instanceof HTMLButtonElement)) {
+          const el = top as HTMLElement
+          if (getComputedStyle(el).pointerEvents !== 'none') {
+            el.style.pointerEvents = 'none'
+            const cls = String(el.className ?? '').split(' ').slice(0, 2).join('.')
+            lines.push(`heal: ${top.tagName.toLowerCase()}.${cls} 盖住输入框，已解除 pointer-events`)
+          }
+        }
+        // The card's own scroll (uV2eYG_scroll) can swallow taps when the
+        // textarea sits at zero height — guarantee a floor inline.
+        if (rect.height < 30) {
+          const grow = textarea.parentElement
+          if (grow !== null) grow.style.minHeight = '44px'
+          textarea.style.minHeight = '44px'
+          lines.push('heal: 输入框高度过小，已强制 min-height 44px')
+        }
+        // Diagnostic line only when something is off (so healthy operation
+        // stays silent): locked while idle, lingering busy, tiny, or covered.
+        if (busy || textarea.disabled || textarea.readOnly || rect.height < 30 || !hitTextarea) {
+          const topDesc =
+            top === null
+              ? 'null'
+              : `${top.tagName.toLowerCase()}.${String((top as HTMLElement).className ?? '').split(' ').slice(0, 2).join('.')}`
+          lines.push(
+            `ta[${phase}] ${state} rect=${Math.round(rect.width)}x${Math.round(rect.height)}@y${Math.round(rect.top)} hit=${topDesc}${hitTextarea ? '✓' : '✗'}`,
+          )
+        }
+      }
+      if (lines.length === 0) return
+      showPanel(lines.join('\n'))
+    }
+
+    // After a send: the readOnly/disabled flip marks the submit settle.
+    const flipObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const el = mutation.target
+        if (!(el instanceof HTMLTextAreaElement)) continue
+        if (el.readOnly || el.disabled) continue
+        window.setTimeout(diagnose, 700)
+        break
+      }
+    })
+    const watched = new WeakSet<HTMLTextAreaElement>()
+    const watchFlips = (textarea: HTMLTextAreaElement): void => {
+      if (watched.has(textarea)) return
+      watched.add(textarea)
+      flipObserver.observe(textarea, { attributes: true, attributeFilter: ['readonly', 'disabled'] })
+    }
+    // Every composer tap reports the live state (and heals a stuck lock).
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!(event.target instanceof Element)) return
+      const textarea = event.target.closest('textarea')
+      if (textarea === null) return
+      if (composerCardOf(textarea) === null) return
+      watchFlips(textarea as HTMLTextAreaElement)
+      window.setTimeout(diagnose, 120)
+    }
+    const onFocusIn = (event: FocusEvent): void => {
+      if (!(event.target instanceof HTMLTextAreaElement)) return
+      if (composerCardOf(event.target) === null) return
+      watchFlips(event.target)
+    }
+    const scanObserver = new MutationObserver(() => {
+      for (const textarea of composerTextareas()) watchFlips(textarea)
+    })
+    scanObserver.observe(document.body, { childList: true, subtree: true })
+    for (const textarea of composerTextareas()) watchFlips(textarea)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('focusin', onFocusIn, true)
+    // Periodic sweep: catches a busy phase that lingers with NO events
+    // (the stuck-submitting case produces no mutations or taps), so the
+    // 30s emergency unlock actually fires. Cheap — attribute scan only;
+    // diagnose() itself is skipped while the composer is healthy.
+    const sweepTimer = window.setInterval(() => {
+      for (const textarea of composerTextareas()) {
+        const phase = textarea.getAttribute('data-phase') ?? ''
+        if (phase === 'submitting' || phase === 'adjudicating' || textarea.disabled || textarea.readOnly) {
+          diagnose()
+          break
+        }
+      }
+    }, 5000)
+    return () => {
+      flipObserver.disconnect()
+      scanObserver.disconnect()
+      window.clearInterval(sweepTimer)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('focusin', onFocusIn, true)
+      panel?.remove()
+    }
+  }, 'dsh-mobile-shell: composer self-heal + diagnostics')
   // Chat font size rail: two stepper buttons (A- / A+) plus a px readout
   // at the FAR RIGHT of the conversation tab bar. The value persists in
   // localStorage and is applied as --mobile-nav-font-scale on the chat

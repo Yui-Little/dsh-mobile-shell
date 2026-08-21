@@ -507,12 +507,36 @@ a:active,
   /* Android WebView: html/body touch-action:manipulation can swallow caret
      placement and IME on the composer. Restore default touch on the
      textarea so a tap always opens the keyboard and shows a caret. */
-  [data-phase] [class*="_card"][data-mobile-nav-composer] textarea {
+  [data-phase] [class*="_card"][data-mobile-nav-composer] textarea,
+  [data-phase] [class$="_grow"] textarea {
     touch-action: auto !important;
     user-select: text !important;
     -webkit-user-select: text !important;
     pointer-events: auto !important;
-    caret-color: auto;
+    caret-color: var(--dsw-alias-state-business-primary, #4f6ef7);
+    z-index: 2;
+  }
+  /* Official textarea is position:absolute; inset:0 inside _grow. If grow
+     ever collapses after send, the hit target is 0px and taps miss until
+     reload. Keep a one-line floor so the field stays tappable. The
+     structural [class$="_grow"] arm covers the microtask window before our
+     marker stamp lands after a React commit. */
+  [data-phase] [class*="_card"][data-mobile-nav-composer] [class$="_grow"],
+  [data-phase] [class$="_grow"] {
+    min-height: 44px !important;
+  }
+  /* Syntax-highlight overlay sits over the textarea (absolute inset:0).
+     It must never steal taps — especially after send, when the hero-empty
+     height collapse can leave the overlay covering the hit target. */
+  [data-phase] [class*="_card"][data-mobile-nav-composer] [class$="_overlayAnchor"],
+  [data-phase] [class*="_card"][data-mobile-nav-composer] [class$="_overlayAnchor"] *,
+  [data-phase] [class*="_card"][data-mobile-nav-composer] [class$="_backdrop"],
+  [data-phase] [class*="_card"][data-mobile-nav-composer] [data-input-backdrop],
+  [data-phase] [class$="_card"] > [class$="_overlayAnchor"],
+  [data-phase] [class$="_card"] > [class$="_overlayAnchor"] *,
+  [data-phase] [class$="_grow"] [class$="_backdrop"],
+  [data-phase] [class$="_grow"] [data-input-backdrop] {
+    pointer-events: none !important;
   }
 
   /* --- Command menu (the "/" launcher) as a mobile sheet ---
@@ -1806,18 +1830,13 @@ a:active,
     line-height: 18px;
     overflow-wrap: anywhere;
   }
-  /* The official composer autosizes the textarea and writes an inline
-     height (2 lines on the hero empty state) on the textarea's scroll/grow
-     wrappers. :placeholder-shown lets us collapse the EMPTY state to one
-     line with !important; as soon as the user types, the pseudo-class no
-     longer matches and the autosizer's inline height takes over again — so
-     multi-line growth keeps working. */
-  [data-phase="hero"] textarea:placeholder-shown {
-    height: 48px !important;
-  }
-  [data-phase="hero"] [class$="_card"][data-mobile-nav-hero-empty] > [class$="_scroll"],
-  [data-phase="hero"] [class$="_card"][data-mobile-nav-hero-empty] [class$="_grow"] {
-    height: 48px !important;
+  /* Empty-hero composer: do NOT force height on _scroll/_grow. The official
+     textarea is position:absolute; inset:0 inside _grow, so a stale 48px
+     lock after send leaves the real hit target collapsed and taps miss
+     until a full reload. Size the empty state via the hidden mirror's
+     min-height instead — that is what the official autosizer measures. */
+  [data-phase="hero"] [class$="_card"][data-mobile-nav-hero-empty] [class$="_mirror"] {
+    min-height: 48px !important;
   }
   [data-phase="hero"] [class$="_card"][data-mobile-nav-composer] > [class$="_row"] {
     padding-top: 4px !important;
