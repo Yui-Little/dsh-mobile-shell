@@ -89,7 +89,7 @@ export function apply(ctx: ClientContext): void {
   // from updated ones. Show a brief toast exactly once per version (tracked
   // in localStorage) so the user can confirm which bundle is running.
   ctx.effect(() => {
-    const VERSION = '0.1.6'
+    const VERSION = '0.1.7'
     const KEY = 'dsh-mobile-shell:last-seen-version'
     try {
       if (localStorage.getItem(KEY) === VERSION) return () => {}
@@ -413,25 +413,27 @@ export function apply(ctx: ClientContext): void {
         }
       }
       if (deferred) return
-      // 1) Modal structure: the settings dialog is a near-full-width sheet
-      //    (nav tab list = last child of the header row holds <button>s);
-      //    every other modal (export dialog, our delete confirm) keeps the
-      //    official centered card. The Modal root (direct parent) hosts the
-      //    dimmed mask as its first child — mark it for the sheet fade-in.
+      // 1) Modal structure. The official settings panel is uniquely
+      //    `dialog > nav + content` (the <nav> is implicit role=navigation
+      //    and holds the section buttons). Every other modal — export,
+      //    delete confirm, model picker — is a primitives Modal whose first
+      //    child is a content/header block, never a <nav>. An earlier check
+      //    required `[role=navigation] === null`, which inverted the match:
+      //    real settings never got the full-page sheet, and delete/export
+      //    were stretched to cover the viewport.
       let anyModal = false
       for (const modal of document.querySelectorAll<HTMLElement>('[aria-modal="true"]')) {
         anyModal = true
-        const header = modal.firstElementChild
+        const first = modal.firstElementChild
         const isSettings =
-          header !== null &&
-          header.lastElementChild !== null &&
-          header.lastElementChild.querySelector('button') !== null &&
-          modal.querySelector('[role="navigation"]') === null
+          first instanceof HTMLElement &&
+          first.tagName === 'NAV' &&
+          first.querySelectorAll('button').length >= 2
         if (isSettings) modal.setAttribute('data-mobile-nav', 'settings-sheet')
-        else modal.removeAttribute('data-mobile-nav')
+        else if (modal.getAttribute('data-mobile-nav') === 'settings-sheet') modal.removeAttribute('data-mobile-nav')
         const overlay = modal.parentElement
         if (overlay !== null && isSettings) overlay.setAttribute('data-mobile-nav', 'sheet-overlay')
-        else overlay?.removeAttribute('data-mobile-nav')
+        else if (overlay?.getAttribute('data-mobile-nav') === 'sheet-overlay') overlay.removeAttribute('data-mobile-nav')
         // The "Open configuration file" action opens the settings document in
         // a native desktop editor (xdg-open / macOS open). A phone has no
         // such opener — the call can only ever fail — so hide the button.
@@ -912,11 +914,13 @@ export function apply(ctx: ClientContext): void {
       if (userTappedTextarea) return
       // Programmatic focus (send / session re-mount / keepFocus): drop it,
       // and keep dropping while React's focus effects re-run, so no
-      // programmatic focus survives with the IME closed. Stops the moment a
-      // real tap lands or the element actually stays blurred.
+      // programmatic focus survives with the IME closed. Cap the rAF loop —
+      // an unbounded blur/focus fight with React freezes the composer.
+      let frames = 0
       const drop = (): void => {
         if (userTappedTextarea) return
         if (document.activeElement !== focused) return
+        if (frames++ > 12) return
         focused.blur()
         requestAnimationFrame(drop)
       }
@@ -1007,16 +1011,33 @@ export function apply(ctx: ClientContext): void {
         }
         // Self-heal: locked while the machine is idle and NOT the hero
         // workspace trigger → force re-enable (React re-locks only on state
-        // changes; no re-render is coming).
-        if (!busy && !heroTrigger && (textarea.disabled || textarea.readOnly)) {
-          textarea.disabled = false
-          textarea.readOnly = false
+        // changes; no re-render is coming). Also drop a leftover HTML
+        // `inert` attribute on the card (distinct from data-phase="inert"),
+        // which paints normally but swallows every tap.
+        if (!busy && !heroTrigger) {
+          if (textarea.disabled || textarea.readOnly) {
+            textarea.disabled = false
+            textarea.readOnly = false
+          }
+          if (textarea.hasAttribute('inert')) textarea.removeAttribute('inert')
+          if (card?.hasAttribute('inert')) card.removeAttribute('inert')
         }
-        // Covering layer inside the card: neutralize it.
-        if (!hitTextarea && top !== null && card !== null && card.contains(top) && !(top instanceof HTMLButtonElement)) {
-          const el = top as HTMLElement
-          if (getComputedStyle(el).pointerEvents !== 'none') {
-            el.style.pointerEvents = 'none'
+        // Covering layer inside the card: neutralize ONLY highlight/backdrop
+        // overlays. Hitting the tool row / grow / send wrapper and setting
+        // pointer-events:none is what made "/" "+" and send untappable.
+        if (
+          rect.width >= 8 &&
+          rect.height >= 8 &&
+          !hitTextarea &&
+          top instanceof HTMLElement &&
+          card !== null &&
+          card.contains(top) &&
+          top !== textarea &&
+          !top.closest('button, a, textarea, input, select, [role="button"], [data-mobile-nav]')
+        ) {
+          const cls = typeof top.className === 'string' ? top.className : ''
+          if (/overlay|backdrop|highlight|mirror/i.test(cls) || top.hasAttribute('data-input-backdrop')) {
+            if (getComputedStyle(top).pointerEvents !== 'none') top.style.pointerEvents = 'none'
           }
         }
         // The card's own scroll (uV2eYG_scroll) can swallow taps when the

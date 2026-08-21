@@ -46,6 +46,20 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node
 }
 
+/** Parse a JSON response without throwing on SPA HTML / empty / 403 pages. */
+async function readJson<T>(res: Response): Promise<T | null> {
+  const type = res.headers.get('content-type') ?? ''
+  const text = await res.text()
+  if (text === '' || text.startsWith('<') || !/json/i.test(type) && !text.startsWith('{') && !text.startsWith('[')) {
+    return null
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return null
+  }
+}
+
 function iconHtml(name: string): string {
   const paths: Record<string, string> = {
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
@@ -685,14 +699,14 @@ export function MarketplaceView() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ text }),
         })
-        const payload = (await res.json()) as { ok?: boolean; translation?: string; error?: string }
-        if (payload.ok === true && payload.translation !== undefined && payload.translation !== '') {
+        const payload = await readJson<{ ok?: boolean; translation?: string; error?: string }>(res)
+        if (payload?.ok === true && payload.translation !== undefined && payload.translation !== '') {
           descEl.textContent = payload.translation
           descEl.classList.add('mkt-desc-translated')
           btn.textContent = '已翻译'
           btn.disabled = true
         } else {
-          showToast(payload.error ?? '翻译失败', true)
+          showToast(payload?.error ?? '翻译失败', true)
           btn.textContent = '翻译'
           btn.disabled = false
         }
@@ -721,7 +735,7 @@ export function MarketplaceView() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ target }),
         })
-        const payload = (await res.json()) as {
+        const payload = await readJson<{
           ok?: boolean
           output?: string
           error?: string
@@ -730,8 +744,8 @@ export function MarketplaceView() {
           hotLoadError?: string
           persisted?: string[]
           persistFailed?: boolean
-        }
-        if (payload.ok === true) {
+        }>(res)
+        if (payload?.ok === true) {
           btn.textContent = ''
           btn.append(iconEl('check', 'mkt-ic'), document.createTextNode(' 已安装'))
           btn.classList.add('mkt-installed')
@@ -751,7 +765,7 @@ export function MarketplaceView() {
         } else {
           btn.textContent = '安装'
           btn.classList.remove('mkt-busy')
-          showToast(payload.error ?? '安装失败', true)
+          showToast(payload?.error ?? '安装失败', true)
         }
       } catch {
         btn.textContent = original
@@ -862,11 +876,11 @@ export function MarketplaceView() {
         body.innerHTML = '<div class="mkt-win-loading">加载文档…</div>'
         try {
           const res = await fetch(`${README_FILE_URL}?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repoName)}&path=${encodeURIComponent(path)}`)
-          const payload = (await res.json()) as { ok?: boolean; readme?: string; path?: string; error?: string }
-          if (payload.ok === true && payload.readme !== undefined) {
+          const payload = await readJson<{ ok?: boolean; readme?: string; path?: string; error?: string }>(res)
+          if (payload?.ok === true && payload.readme !== undefined) {
             renderReadme(payload.readme, payload.path ?? path)
           } else {
-            body.innerHTML = `<div class="mkt-win-error">${payload.error ?? '无法加载文档'}</div>`
+            body.innerHTML = `<div class="mkt-win-error">${payload?.error ?? '无法加载文档'}</div>`
           }
         } catch {
           body.innerHTML = '<div class="mkt-win-error">无法加载文档</div>'
@@ -901,11 +915,11 @@ export function MarketplaceView() {
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ text }),
             })
-            const payload = (await res.json()) as { ok?: boolean; translation?: string; error?: string }
-            if (payload.ok === true && payload.translation !== undefined && payload.translation !== '') {
+            const payload = await readJson<{ ok?: boolean; translation?: string; error?: string }>(res)
+            if (payload?.ok === true && payload.translation !== undefined && payload.translation !== '') {
               renderReadme(payload.translation, filebarLabel.textContent ?? 'README.md', true)
             } else {
-              showToast(payload.error ?? '翻译失败', true)
+              showToast(payload?.error ?? '翻译失败', true)
               translateMd.textContent = original
               translateMd.disabled = false
             }
@@ -922,12 +936,12 @@ export function MarketplaceView() {
       void (async () => {
         try {
           const res = await fetch(`${README_URL}?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repoName)}`)
-          const payload = (await res.json()) as { ok?: boolean; readme?: string; url?: string; error?: string }
-          if (payload.ok === true && payload.readme !== undefined) {
+          const payload = await readJson<{ ok?: boolean; readme?: string; url?: string; error?: string }>(res)
+          if (payload?.ok === true && payload.readme !== undefined) {
             const label = (payload.url ?? '').split('/').filter(Boolean).pop() || 'README.md'
             renderReadme(payload.readme, label)
           } else {
-            body.innerHTML = `<div class="mkt-win-error">${payload.error ?? '无法加载 README'}</div>`
+            body.innerHTML = `<div class="mkt-win-error">${payload?.error ?? '无法加载 README'}</div>`
           }
         } catch {
           body.innerHTML = '<div class="mkt-win-error">无法加载 README</div>'
@@ -1013,8 +1027,8 @@ export function MarketplaceView() {
       void (async () => {
         try {
           const res = await fetch(`${UPDATED_URL}?repos=${encodeURIComponent(need.join(','))}`)
-          const payload = (await res.json()) as { ok?: boolean; updated?: Record<string, string> }
-          if (payload.ok === true && payload.updated !== undefined) applyUpdatedMap(payload.updated)
+          const payload = await readJson<{ ok?: boolean; updated?: Record<string, string> }>(res)
+          if (payload?.ok === true && payload.updated !== undefined) applyUpdatedMap(payload.updated)
         } catch {
           // keep the catalog dates
         } finally {
@@ -1039,9 +1053,9 @@ export function MarketplaceView() {
       meta.textContent = '正在加载插件市场…'
       try {
         const res = await fetch(CATALOG_URL)
-        const payload = (await res.json()) as { ok?: boolean; error?: string } & MarketCatalog
-        if (payload.ok !== true) {
-          meta.textContent = payload.error ?? '市场暂时不可用'
+        const payload = await readJson<{ ok?: boolean; error?: string } & MarketCatalog>(res)
+        if (payload === null || payload.ok !== true || !Array.isArray(payload.plugins)) {
+          meta.textContent = payload?.error ?? '市场暂时不可用'
           empty.textContent = '市场暂时不可用'
           grid.append(empty)
           return

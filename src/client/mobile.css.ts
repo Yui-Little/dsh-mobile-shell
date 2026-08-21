@@ -28,34 +28,6 @@ html {
   -webkit-tap-highlight-color: transparent;
   tap-highlight-color: transparent;
 }
-button,
-[role="button"],
-[role="tab"],
-[role="treeitem"],
-[role="option"],
-[role="menuitem"],
-[role="switch"],
-a,
-[class*="navCell"],
-[class*="sessionRow"],
-[class*="searchResultRow"],
-[class*="workspaceRow"] {
-  transition: filter 0.12s ease-out, background-color 0.12s ease-out, opacity 0.12s ease-out !important;
-}
-button:active,
-[role="button"]:active,
-[role="tab"]:active,
-[role="treeitem"]:active,
-[role="option"]:active,
-[role="menuitem"]:active,
-[role="switch"]:active,
-a:active,
-[class*="navCell"]:active,
-[class*="sessionRow"]:active,
-[class*="searchResultRow"]:active,
-[class*="workspaceRow"]:active {
-  filter: brightness(0.92);
-}
 
 [data-mobile-nav="toggle"],
 [data-mobile-nav="files"] {
@@ -148,6 +120,38 @@ a:active,
   html,
   body {
     touch-action: manipulation !important;
+  }
+
+  /* Press feedback: scoped to the phone shell so desktop menus, dialogs,
+     and official opacity/filter animations are not forced onto a 120ms
+     !important transition (that fight is what made buttons feel dead). */
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="treeitem"],
+  [role="option"],
+  [role="menuitem"],
+  [role="switch"],
+  a,
+  [class*="navCell"],
+  [class*="sessionRow"],
+  [class*="searchResultRow"],
+  [class*="workspaceRow"] {
+    transition: filter 0.12s ease-out, background-color 0.12s ease-out, opacity 0.12s ease-out;
+  }
+  button:active,
+  [role="button"]:active,
+  [role="tab"]:active,
+  [role="treeitem"]:active,
+  [role="option"]:active,
+  [role="menuitem"]:active,
+  [role="switch"]:active,
+  a:active,
+  [class*="navCell"]:active,
+  [class*="sessionRow"]:active,
+  [class*="searchResultRow"]:active,
+  [class*="workspaceRow"]:active {
+    filter: brightness(0.92);
   }
 
   /* AppFrame: the drawer takes the sidebar column out of grid flow, so the
@@ -566,13 +570,13 @@ a:active,
       transform: none;
     }
   }
-  [class$="_menu"] [class$="_viewport"] {
+  [class$="_menu"][role="listbox"] [class$="_viewport"] {
     max-height: min(60dvh, 480px) !important;
     overflow-y: auto !important;
     overscroll-behavior: contain !important;
     padding: 6px 6px 14px !important;
   }
-  [class$="_menu"] [class$="_groupTitle"] {
+  [class$="_menu"][role="listbox"] [class$="_groupTitle"] {
     padding: 8px 14px 2px !important;
     font-size: 11px !important;
     font-weight: 600 !important;
@@ -580,7 +584,7 @@ a:active,
     color: var(--dsw-alias-label-tertiary, rgba(0, 0, 0, .5)) !important;
     text-transform: uppercase;
   }
-  [class$="_menu"] [role="option"] {
+  [class$="_menu"][role="listbox"] [role="option"] {
     min-height: 50px !important;
     padding: 8px 14px !important;
     margin: 2px 0 !important;
@@ -594,20 +598,20 @@ a:active,
     background: transparent !important;
     cursor: pointer !important;
   }
-  [class$="_menu"] [role="option"]:hover,
-  [class$="_menu"] [role="option"]:active {
+  [class$="_menu"][role="listbox"] [role="option"]:hover,
+  [class$="_menu"][role="listbox"] [role="option"]:active {
     background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, .05)) !important;
   }
-  [class$="_menu"] [role="option"][class*="_active"] {
+  [class$="_menu"][role="listbox"] [role="option"][class*="_active"] {
     background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f6ef7) 12%, transparent) !important;
   }
-  [class$="_menu"] [class$="_itemName"] {
+  [class$="_menu"][role="listbox"] [class$="_itemName"] {
     font-size: 14px !important;
     font-weight: 600 !important;
     color: var(--dsw-alias-label-primary, inherit) !important;
     line-height: 20px !important;
   }
-  [class$="_menu"] [class$="_itemDescription"] {
+  [class$="_menu"][role="listbox"] [class$="_itemDescription"] {
     font-size: 12px !important;
     color: var(--dsw-alias-label-secondary, inherit) !important;
     line-height: 18px !important;
@@ -2561,10 +2565,12 @@ li[data-mobile-nav="reasoning-card"] {
 /* The four settings pages (General / Models / Plugins / Agent presets) draw
    their setting cards with a grey tint inside the mobile settings sheet; pull
    them to the sheet's own white so the whole settings area reads cleanly. */
-html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"],
-html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowCard"],
-html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"] {
-  background: var(--dsw-specific-menu, #fff) !important;
+@media (max-width: 1023px) {
+  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_row"],
+  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_rowCard"],
+  html [aria-modal="true"][data-mobile-nav="settings-sheet"] [class$="_card"] {
+    background: var(--dsw-specific-menu, #fff) !important;
+  }
 }
 .mkt-meta{color:var(--dsw-alias-label-tertiary,inherit);font-size:12px;line-height:1.4;padding:0 2px}
 .mkt-list{display:flex;flex-direction:column;gap:8px;width:100%}

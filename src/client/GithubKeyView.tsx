@@ -16,6 +16,16 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node
 }
 
+async function readJson<T>(res: Response): Promise<T | null> {
+  const text = await res.text()
+  if (text === '' || text.startsWith('<')) return null
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return null
+  }
+}
+
 export function GithubKeyView() {
   const hostRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -71,10 +81,10 @@ export function GithubKeyView() {
     const refresh = async (): Promise<void> => {
       try {
         const res = await fetch(STATUS_URL)
-        const payload = (await res.json()) as { ok?: boolean; configured?: boolean; source?: string; error?: string }
-        if (payload.ok === true) paintStatus(payload.configured === true, payload.source)
+        const payload = await readJson<{ ok?: boolean; configured?: boolean; source?: string; error?: string }>(res)
+        if (payload?.ok === true) paintStatus(payload.configured === true, payload.source)
         else {
-          status.textContent = payload.error ?? (zh ? '读取失败' : 'Failed to load')
+          status.textContent = payload?.error ?? (zh ? '读取失败' : 'Failed to load')
           status.dataset.state = 'off'
         }
       } catch {
@@ -93,13 +103,13 @@ export function GithubKeyView() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(token === null ? { clear: true } : { token }),
         })
-        const payload = (await res.json()) as { ok?: boolean; configured?: boolean; source?: string; error?: string }
-        if (payload.ok === true) {
+        const payload = await readJson<{ ok?: boolean; configured?: boolean; source?: string; error?: string }>(res)
+        if (payload?.ok === true) {
           input.value = ''
           paintStatus(payload.configured === true, payload.source)
           setHint(token === null ? (zh ? '已清除' : 'Cleared') : (zh ? '已保存到本机' : 'Saved on this device'))
         } else {
-          setHint(payload.error ?? (zh ? '保存失败' : 'Save failed'), true)
+          setHint(payload?.error ?? (zh ? '保存失败' : 'Save failed'), true)
         }
       } catch {
         setHint(zh ? '保存请求失败' : 'Save request failed', true)
