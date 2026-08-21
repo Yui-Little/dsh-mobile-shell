@@ -951,11 +951,11 @@ export function apply(ctx: ClientContext): void {
     }
   }, 'dsh-mobile-shell: restore IME after send')
 
-  // Composer self-heal + diagnostics. The symptom "after one send the input
-  // looks normal but taps do absolutely nothing" is the signature of the
-  // textarea stuck DISABLED/readOnly while the machine is NOT busy: a
-  // disabled textarea is painted identically (the composer text lives in the
-  // transparent backdrop), and it swallows every tap with zero feedback.
+  // Composer self-heal. The symptom "after one send the input looks normal
+  // but taps do absolutely nothing" is the signature of the textarea stuck
+  // DISABLED/readOnly while the machine is NOT busy: a disabled textarea is
+  // painted identically (the composer text lives in the transparent backdrop),
+  // and it swallows every tap with zero feedback.
   // This effect:
   //   1) watches the composer textarea state after every send (readOnly flip)
   //      and on every composer tap;
@@ -964,33 +964,10 @@ export function apply(ctx: ClientContext): void {
   //      NOT the hero workspace-trigger, force-re-enables it (one-shot per
   //      stuck instance — React only re-locks on a state change);
   //   3) when elementFromPoint at the textarea center resolves to a
-  //      non-textarea inside the card, neutralizes that covering layer;
-  //   4) shows a small verdict strip (auto-hides) so the root cause is
-  //      visible when the fix does not fully apply.
+  //      non-textarea inside the card, neutralizes that covering layer.
   ctx.effect(() => {
     const narrow = window.matchMedia('(max-width: 1023px)')
     if (!narrow.matches) return () => {}
-    let panel: HTMLElement | null = null
-    let hideTimer = 0
-    let lastVerdict = ''
-    const showPanel = (verdict: string): void => {
-      if (lastVerdict === verdict && panel !== null) return
-      lastVerdict = verdict
-      panel?.remove()
-      panel = document.createElement('div')
-      panel.setAttribute('data-mobile-nav', 'composer-diag')
-      panel.style.cssText =
-        'position:fixed;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));z-index:99999;' +
-        'background:rgba(12,12,18,.94);color:#fff;font:11px/17px ui-monospace,Menlo,monospace;padding:8px 10px;' +
-        'border-radius:10px;pointer-events:none;white-space:pre-wrap;word-break:break-all;'
-      panel.textContent = verdict
-      document.body.appendChild(panel)
-      if (hideTimer !== 0) window.clearTimeout(hideTimer)
-      hideTimer = window.setTimeout(() => {
-        panel?.remove()
-        panel = null
-      }, 12000)
-    }
     const composerTextareas = (): HTMLTextAreaElement[] => [
       ...document.querySelectorAll<HTMLElement>('[data-input-mirror]'),
     ]
@@ -1004,7 +981,6 @@ export function apply(ctx: ClientContext): void {
     const busySince = new WeakMap<HTMLTextAreaElement, number>()
 
     const diagnose = (): void => {
-      const lines: string[] = []
       for (const textarea of composerTextareas()) {
         const card = textarea.closest<HTMLElement>('[class$="_card"]')
         const phase = textarea.getAttribute('data-phase') ?? '?'
@@ -1018,7 +994,6 @@ export function apply(ctx: ClientContext): void {
         const cy = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2))
         const top = document.elementFromPoint(cx, cy)
         const hitTextarea = top === textarea || (top !== null && textarea.contains(top))
-        const state = `${textarea.disabled ? 'disabled' : 'enabled'}/${textarea.readOnly ? 'readOnly' : 'editable'}`
         // Busy-phase emergency unlock: the phase is authoritative only while
         // it settles quickly; a lingering busy phase is a dead machine.
         if (busy) {
@@ -1026,7 +1001,6 @@ export function apply(ctx: ClientContext): void {
           busySince.set(textarea, since)
           if (Date.now() - since > BUSY_LINGER_MS) {
             textarea.readOnly = false
-            lines.push(`heal: ta[${phase}] 超过 ${Math.round(BUSY_LINGER_MS / 1000)}s 未结算，已强制解锁只读`)
           }
         } else {
           busySince.delete(textarea)
@@ -1037,15 +1011,12 @@ export function apply(ctx: ClientContext): void {
         if (!busy && !heroTrigger && (textarea.disabled || textarea.readOnly)) {
           textarea.disabled = false
           textarea.readOnly = false
-          lines.push(`heal: ta[${phase}] ${state} 机器空闲仍锁死，已解除禁用/只读`)
         }
         // Covering layer inside the card: neutralize it.
         if (!hitTextarea && top !== null && card !== null && card.contains(top) && !(top instanceof HTMLButtonElement)) {
           const el = top as HTMLElement
           if (getComputedStyle(el).pointerEvents !== 'none') {
             el.style.pointerEvents = 'none'
-            const cls = String(el.className ?? '').split(' ').slice(0, 2).join('.')
-            lines.push(`heal: ${top.tagName.toLowerCase()}.${cls} 盖住输入框，已解除 pointer-events`)
           }
         }
         // The card's own scroll (uV2eYG_scroll) can swallow taps when the
@@ -1054,22 +1025,8 @@ export function apply(ctx: ClientContext): void {
           const grow = textarea.parentElement
           if (grow !== null) grow.style.minHeight = '44px'
           textarea.style.minHeight = '44px'
-          lines.push('heal: 输入框高度过小，已强制 min-height 44px')
-        }
-        // Diagnostic line only when something is off (so healthy operation
-        // stays silent): locked while idle, lingering busy, tiny, or covered.
-        if (busy || textarea.disabled || textarea.readOnly || rect.height < 30 || !hitTextarea) {
-          const topDesc =
-            top === null
-              ? 'null'
-              : `${top.tagName.toLowerCase()}.${String((top as HTMLElement).className ?? '').split(' ').slice(0, 2).join('.')}`
-          lines.push(
-            `ta[${phase}] ${state} rect=${Math.round(rect.width)}x${Math.round(rect.height)}@y${Math.round(rect.top)} hit=${topDesc}${hitTextarea ? '✓' : '✗'}`,
-          )
         }
       }
-      if (lines.length === 0) return
-      showPanel(lines.join('\n'))
     }
 
     // After a send: the readOnly/disabled flip marks the submit settle.
@@ -1128,9 +1085,8 @@ export function apply(ctx: ClientContext): void {
       window.clearInterval(sweepTimer)
       document.removeEventListener('pointerdown', onPointerDown, true)
       document.removeEventListener('focusin', onFocusIn, true)
-      panel?.remove()
     }
-  }, 'dsh-mobile-shell: composer self-heal + diagnostics')
+  }, 'dsh-mobile-shell: composer self-heal')
   // Chat font size rail: two stepper buttons (A- / A+) plus a px readout
   // at the FAR RIGHT of the conversation tab bar. The value persists in
   // localStorage and is applied as --mobile-nav-font-scale on the chat
